@@ -1,75 +1,40 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
 # CodeRabbit Configuration for AI Legal Analyst
 
 # Language settings
 language: en-US
 
+# Custom tone instructions for reviews
+tone_instructions: |
+  Focus on FastAPI best practices, regex patterns, and legal contract processing logic.
+  Pay special attention to error handling, validation, and security in API endpoints.
+
 # Review settings
 reviews:
-  # Review profile - can be "chill", "assertive", or "auto"
-  profile: "assertive"
+  # Review profile - "assertive" provides more thorough feedback
+  profile: assertive
 
-  # Request changes on critical issues
+  # Request changes workflow
   request_changes_workflow: true
 
   # High-level summary at the beginning
   high_level_summary: true
 
-  # Include poem in reviews (optional, fun feature)
+  # Poem in reviews
   poem: true
-
-  # Review levels for different aspects
-  review_status: true
 
   # Auto-review settings
   auto_review:
     enabled: true
-    drafts: false  # Don't auto-review draft PRs
+    drafts: false
 
-# Path-based instructions for focused reviews
-path_instructions:
-  - path: "app/**/*.py"
-    instructions: |
-      - Focus on FastAPI best practices and async/await patterns
-      - Check for proper error handling and validation
-      - Verify Pydantic models are correctly defined
-      - Look for security issues in API endpoints
-
-  - path: "app/main.py"
-    instructions: |
-      - Pay special attention to the clause segmentation logic
-      - Verify regex patterns are correct and handle edge cases
-      - Check that UUID generation is working properly
-
-  - path: "**/*.md"
-    instructions: |
-      - Check for clarity and completeness
-      - Verify code examples are correct
-      - Ensure documentation matches implementation
-
-# Files to ignore in reviews
-ignore:
-  - "*.pyc"
-  - "__pycache__/**"
-  - ".venv/**"
-  - "*.log"
-  - ".env"
-  - ".env.*"
-
-# Enable specific checks
-checks:
-  # Enable timeout warnings for long-running functions
-  timeout_ms: 5000
-
-# Knowledge base - context about your project
+# Knowledge base configuration
 knowledge_base:
-  - "This is a FastAPI application for segmenting legal contracts into clauses"
-  - "The core logic uses regex pattern matching to identify numbered headings"
-  - "Each clause receives a unique UUID identifier"
-  - "Python 3.11 is used with type hints throughout"
+  # Path-specific learnings
+  learnings:
+    scope: global
 
-# Tools to enable
-tools:
-  # GitHub integration
-  github:
+  # Code guidelines
+  code_guidelines:
     enabled: true
-    auto_review_enabled: true
