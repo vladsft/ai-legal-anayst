@@ -43,17 +43,23 @@ env/
 htmlcov/
 *.cover
 .hypothesis/
+pip-log.txt
+pip-delete-this-directory.txt
 
-# Environment variables
+# Environment variables and secrets (CRITICAL - contains API keys)
 .env
 .env.local
+.env.*.local
 
 # Logs
 *.log
+logs/
 
 # Database
 *.db
+*.sqlite
 *.sqlite3
+*.sql.backup
 
 # Jupyter Notebook
 .ipynb_checkpoints

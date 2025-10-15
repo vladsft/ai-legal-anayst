@@ -1,0 +1,16 @@
+# Web Framework and Server
+fastapi>=0.104.0,<1.0.0
+uvicorn[standard]>=0.24.0,<1.0.0
+
+# OpenAI Integration
+openai>=1.0.0,<2.0.0
+
+# Database and ORM
+psycopg2-binary>=2.9.9,<3.0.0
+sqlalchemy>=2.0.0,<3.0.0
+pgvector>=0.2.0,<1.0.0
+
+# Configuration Management
+pydantic>=2.0.0,<3.0.0
+pydantic-settings>=2.0.0,<3.0.0
+python-dotenv>=1.0.0,<2.0.0
