@@ -83,6 +83,18 @@ def segment_contract(text: str) -> List[Clause]:
 # API Endpoint
 # --------------------------
 
+@app.get("/health")
+def health_check():
+    """
+    Health check endpoint to verify the service is running.
+    Returns status and service information.
+    """
+    return {
+        "status": "healthy",
+        "service": "AI Legal Analyst MVP",
+        "version": "0.1.0"
+    }
+
 @app.post("/contracts/segment", response_model=List[Clause])
 def upload_and_segment(req: UploadRequest):
     """

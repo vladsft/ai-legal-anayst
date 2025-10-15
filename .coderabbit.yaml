@@ -1,0 +1,40 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+# CodeRabbit Configuration for AI Legal Analyst
+
+# Language settings
+language: en-US
+
+# Custom tone instructions for reviews
+tone_instructions: |
+  Focus on FastAPI best practices, regex patterns, and legal contract processing logic.
+  Pay special attention to error handling, validation, and security in API endpoints.
+
+# Review settings
+reviews:
+  # Review profile - "assertive" provides more thorough feedback
+  profile: assertive
+
+  # Request changes workflow
+  request_changes_workflow: true
+
+  # High-level summary at the beginning
+  high_level_summary: true
+
+  # Poem in reviews
+  poem: true
+
+  # Auto-review settings
+  auto_review:
+    enabled: true
+    drafts: false
+
+# Knowledge base configuration
+knowledge_base:
+  # Path-specific learnings
+  learnings:
+    scope: global
+
+  # Code guidelines
+  code_guidelines:
+    enabled: true
