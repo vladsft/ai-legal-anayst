@@ -91,15 +91,118 @@ brew install postgresql
 
 ## Database Setup
 
-Create the PostgreSQL database:
+### 1. Install PostgreSQL
+
+Ensure PostgreSQL 14+ is installed and running on your system.
+
+**macOS (using Homebrew):**
+```bash
+brew install postgresql@14
+brew services start postgresql@14
+```
+
+**Ubuntu/Debian:**
+```bash
+sudo apt-get update
+sudo apt-get install postgresql-14 postgresql-contrib-14
+sudo systemctl start postgresql
+```
+
+**Windows:**
+Download and install from [PostgreSQL official website](https://www.postgresql.org/download/windows/)
+
+### 2. Install pgvector Extension
+
+⚠️ **IMPORTANT**: The pgvector extension is required for semantic search functionality.
+
+**macOS (using Homebrew):**
+```bash
+brew install pgvector
+```
+
+**Ubuntu/Debian:**
+Follow compilation instructions at [pgvector GitHub](https://github.com/pgvector/pgvector#installation)
+
+**Docker:**
+Use pgvector-enabled PostgreSQL image:
+```bash
+docker run -d --name postgres-pgvector \
+  -e POSTGRES_PASSWORD=mypassword \
+  -p 5432:5432 \
+  ankane/pgvector
+```
+
+**Official Documentation**: https://github.com/pgvector/pgvector
+
+### 3. Create Database
+
+Create the PostgreSQL database for the application:
 
 ```bash
 createdb legal_analyst
 ```
 
-> **Note**: Database schema initialization and migrations will be covered in subsequent development phases.
+Or using psql:
+```bash
+psql -U postgres -c "CREATE DATABASE legal_analyst;"
+```
+
+### 4. Initialize Database Schema
+
+Run the initialization script to enable pgvector and create all required tables:
+
+```bash
+python -m app.db_init
+```
+
+**What this script does:**
+- Enables the pgvector extension for vector similarity search
+- Creates all required tables:
+  - `contracts`: Stores uploaded contract documents
+  - `clauses`: Individual segmented clauses with embeddings
+  - `entities`: Extracted entities (parties, dates, terms, etc.)
+  - `risk_assessments`: Risk analysis results
+  - `summaries`: Plain-language summaries
+  - `qa_history`: Question-answer interaction history
+
+**Note**: This script is safe to run multiple times (idempotent operation).
+
+### 5. Verify Setup
+
+**Check that tables were created:**
+```bash
+psql -d legal_analyst -c '\dt'
+```
+
+Expected output: List of 6 tables (contracts, clauses, entities, risk_assessments, summaries, qa_history)
+
+**Verify pgvector extension:**
+```bash
+psql -d legal_analyst -c "SELECT * FROM pg_extension WHERE extname='vector';"
+```
+
+### Troubleshooting
+
+**If pgvector extension fails:**
+- Ensure pgvector is installed on your PostgreSQL server (not just the Python package)
+- Verify your database user has `CREATE EXTENSION` privilege
+- To manually enable: `psql -U postgres -d legal_analyst -c 'CREATE EXTENSION vector;'`
+
+**If connection fails:**
+- Verify `DATABASE_URL` in `.env` file matches your PostgreSQL configuration
+- Test connection: `psql <your-database-url>`
+- Ensure PostgreSQL is running: `pg_isready`
+
+**If database does not exist:**
+- Create it first: `createdb legal_analyst`
+
+**If permission errors:**
+- Ensure your PostgreSQL user has appropriate privileges
+- Grant privileges: `psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE legal_analyst TO <your_user>;"`
 
 ## Running the Application
+
+⚠️ **Prerequisites**: Ensure the database has been initialized (see Database Setup above) before starting the API.
 
 Start the development server:
 
@@ -132,9 +235,11 @@ ai-legal-anayst/
 │   ├── main.py           # FastAPI application and endpoints
 │   │                     # - segment_contract() function (line 44-80)
 │   │                     # - POST /contracts/segment endpoint
-│   ├── config.py         # Configuration management
-│   ├── models.py         # Database models (coming in next phase)
-│   ├── database.py       # Database connection setup (coming in next phase)
+│   ├── config.py         # Configuration management with pydantic-settings
+│   ├── database.py       # Database connection and session management
+│   ├── models.py         # SQLAlchemy ORM models (6 tables)
+│   ├── crud.py           # CRUD operations for database entities
+│   ├── db_init.py        # Database initialization script
 │   └── services/         # Business logic services (coming in next phase)
 ├── .env                  # Environment variables (DO NOT COMMIT)
 ├── .env.example          # Environment template
@@ -154,15 +259,20 @@ ai-legal-anayst/
 
 ## Development Status
 
-### ✅ Current Features
+### ✅ Completed Features
 - Basic clause segmentation using regex pattern matching
 - REST API endpoint for contract text processing
-- FastAPI application structure
+- FastAPI application structure with configuration management
+- **Database infrastructure with PostgreSQL and pgvector**
+  - SQLAlchemy ORM models for 6 tables (contracts, clauses, entities, risk_assessments, summaries, qa_history)
+  - Database connection and session management
+  - CRUD operations for contracts and clauses
+  - Automated database initialization script
 
 ### 🚧 In Progress
-- Database integration with PostgreSQL and pgvector
 - AI-powered clause analysis using OpenAI GPT-4o
 - Entity extraction and relationship mapping
+- Integration of database persistence into existing endpoints
 
 ### 📋 Planned Features
 - Risk assessment and obligation tracking
