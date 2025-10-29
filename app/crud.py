@@ -16,7 +16,8 @@ from datetime import datetime
 from typing import Optional, List
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
-from app.models import Contract, Clause
+from sqlalchemy import func
+from app.models import Contract, Clause, Entity
 
 
 # ============================================================================
@@ -331,3 +332,154 @@ def bulk_create_clauses(db: Session, clauses: List[Clause]) -> None:
             ) from e
         # Re-raise other integrity errors as-is to preserve DBAPI details
         raise
+
+
+# ============================================================================
+# Entity CRUD Operations
+# ============================================================================
+
+
+def create_entity(
+    db: Session,
+    contract_id: int,
+    entity_type: str,
+    value: str,
+    context: Optional[str] = None,
+    confidence: Optional[str] = None
+) -> Entity:
+    """
+    Create a new entity record.
+
+    This will be called from the updated /contracts/segment endpoint to
+    persist extracted entities from OpenAI GPT-4o analysis.
+
+    Args:
+        db: Database session
+        contract_id: Parent contract ID
+        entity_type: Type of entity (party/date/financial_term/governing_law/obligation)
+        value: Extracted entity value
+        context: Optional surrounding text providing context
+        confidence: Optional confidence level (high/medium/low)
+
+    Returns:
+        Entity: Created entity object with auto-generated ID
+
+    Raises:
+        SQLAlchemyError: On database operation failure
+    """
+    entity = Entity(
+        contract_id=contract_id,
+        entity_type=entity_type.lower(),  # Normalize to lowercase for consistent querying
+        value=value,
+        context=context,
+        confidence=confidence
+    )
+    db.add(entity)
+    try:
+        db.commit()
+        db.refresh(entity)
+    except Exception as e:
+        db.rollback()
+        raise
+    return entity
+
+
+def bulk_create_entities(db: Session, entities: List[Entity]) -> None:
+    """
+    Efficiently insert multiple entities in a single transaction.
+
+    This optimizes insertion of multiple entities from extraction results,
+    reducing database round-trips. Unlike bulk_save_objects, this uses
+    add_all() to populate auto-generated IDs on entity objects.
+
+    Args:
+        db: Database session
+        entities: List of Entity objects to insert
+
+    Raises:
+        IntegrityError: For constraint violations (e.g., foreign key)
+        SQLAlchemyError: On other database operation failures
+
+    Note:
+        On failure, the entire transaction is rolled back. Handle exceptions
+        appropriately in calling code.
+    """
+    try:
+        db.add_all(entities)
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        raise
+
+
+def get_entities_by_contract(db: Session, contract_id: int) -> List[Entity]:
+    """
+    Retrieve all entities for a contract.
+
+    This retrieves all extracted entities for the GET /contracts/{id}/entities
+    endpoint, allowing users to view all entities found in a contract.
+
+    Args:
+        db: Database session
+        contract_id: Parent contract ID
+
+    Returns:
+        List of entity objects for the specified contract
+    """
+    return db.query(Entity).filter(Entity.contract_id == contract_id).all()
+
+
+def get_entities_by_type(
+    db: Session,
+    contract_id: int,
+    entity_type: str
+) -> List[Entity]:
+    """
+    Retrieve entities filtered by type for a specific contract.
+
+    This enables filtering entities by type, useful for features like
+    "show me all parties" or "show me all dates" in the contract.
+
+    Args:
+        db: Database session
+        contract_id: Parent contract ID
+        entity_type: Entity type to filter by (party/date/financial_term/governing_law/obligation)
+
+    Returns:
+        List of entity objects matching the type for the specified contract
+
+    Note:
+        Uses case-insensitive comparison via SQL lower() to handle entity_type variations.
+        TODO: Migrate to DB Enum or CHECK constraint to enforce allowed entity types at schema level.
+    """
+    return db.query(Entity).filter(
+        Entity.contract_id == contract_id,
+        func.lower(Entity.entity_type) == entity_type.lower()
+    ).all()
+
+
+def count_entities_by_type(db: Session, contract_id: int) -> dict:
+    """
+    Count entities by type for a contract.
+
+    This provides statistics for the GET /contracts/{id}/entities endpoint
+    response, showing how many entities of each type were extracted.
+
+    Args:
+        db: Database session
+        contract_id: Parent contract ID
+
+    Returns:
+        Dictionary mapping entity types to counts (e.g., {'party': 2, 'date': 5})
+    """
+    results = db.query(
+        Entity.entity_type,
+        func.count(Entity.id)
+    ).filter(
+        Entity.contract_id == contract_id
+    ).group_by(
+        Entity.entity_type
+    ).all()
+
+    # Convert list of tuples to dictionary
+    return {entity_type: count for entity_type, count in results}
