@@ -179,7 +179,13 @@ def upload_and_segment(
             crud.bulk_create_clauses(db, clause_models)
             logger.info(f"Persisted {len(clause_models)} clauses to database")
         except crud.DuplicateClauseError as e:
-            logger.error(f"Duplicate clause detected: {e}")
+            logger.error(f"Duplicate clause detected: {e}", exc_info=True)
+            # Update contract to terminal failed state
+            try:
+                crud.update_contract_status(db, contract.id, 'failed')
+                logger.info(f"Updated contract {contract.id} status to 'failed'")
+            except Exception as status_err:
+                logger.error(f"Failed to update contract status to 'failed': {status_err}", exc_info=True)
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(e)
@@ -272,19 +278,19 @@ def upload_and_segment(
         # Re-raise HTTP exceptions (like 409 Conflict) without converting to 500
         raise
     except Exception as e:
-        logger.error(f"Contract processing failed: {type(e).__name__}: {e}")
+        logger.exception("Contract processing failed")
 
         # Update contract status to failed if contract was created
         if contract:
             try:
                 crud.update_contract_status(db, contract.id, 'failed')
             except Exception as status_err:
-                logger.error(f"Failed to update contract status: {status_err}")
+                logger.exception("Failed to update contract status")
 
         # Return error response
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to process contract: {str(e)}"
+            detail="Internal server error while processing contract"
         )
 
 
