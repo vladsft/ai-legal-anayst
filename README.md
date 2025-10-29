@@ -229,6 +229,7 @@ Returns status and version information.
 **`POST /contracts/segment`** - Upload and process a contract
 
 **Request Body:**
+
 ```json
 {
   "text": "<contract text>",
@@ -238,6 +239,7 @@ Returns status and version information.
 ```
 
 **Response:**
+
 ```json
 {
   "contract_id": 1,
@@ -269,6 +271,128 @@ Returns status and version information.
 - `completed_with_warnings` - Clause segmentation succeeded but entity extraction failed (clauses are still available; check message for details)
 - `failed` - Processing failed entirely
 
+**Success Response (HTTP 200):**
+```json
+{
+  "contract_id": 1,
+  "status": "completed",
+  "clauses": [...],
+  "entities": [...],
+  "message": "Contract processed successfully. Found 3 clauses and 5 entities."
+}
+```
+
+**Partial Success Response (HTTP 200):**
+```json
+{
+  "contract_id": 1,
+  "status": "completed_with_warnings",
+  "clauses": [
+    {
+      "clause_id": "uuid-string",
+      "number": "1",
+      "title": "Term",
+      "text": "This agreement lasts 12 months."
+    }
+  ],
+  "entities": [],
+  "message": "Contract segmented into clauses, but entity extraction failed: Entity extraction failed: APITimeoutError: Request timed out."
+}
+```
+
+**Error Responses:**
+
+- **409 Conflict** - Duplicate clause ID detected (rare edge case)
+  ```json
+  {
+    "detail": "Duplicate clause ID '123e4567-e89b-12d3-a456-426614174000' already exists for contract 1"
+  }
+  ```
+
+- **500 Internal Server Error** - Processing failure (database error, unexpected exception)
+  ```json
+  {
+    "detail": "Failed to process contract: <error description>"
+  }
+  ```
+
+**Upstream Service Errors (OpenAI):**
+
+When entity extraction encounters OpenAI API issues, the endpoint returns `completed_with_warnings` (HTTP 200) with clauses but empty entities:
+
+- **Rate Limit (OpenAI 429)**:
+  ```json
+  {
+    "contract_id": 1,
+    "status": "completed_with_warnings",
+    "clauses": [...],
+    "entities": [],
+    "message": "Contract segmented into clauses, but entity extraction failed: Entity extraction failed: RateLimitError: You exceeded your current quota"
+  }
+  ```
+
+- **OpenAI API Timeout**:
+  ```json
+  {
+    "contract_id": 1,
+    "status": "completed_with_warnings",
+    "clauses": [...],
+    "entities": [],
+    "message": "Contract segmented into clauses, but entity extraction failed: Entity extraction failed: APITimeoutError: Request timed out."
+  }
+  ```
+
+- **OpenAI Service Error (5xx)**:
+  ```json
+  {
+    "contract_id": 1,
+    "status": "completed_with_warnings",
+    "clauses": [...],
+    "entities": [],
+    "message": "Contract segmented into clauses, but entity extraction failed: Entity extraction failed: APIError: The server had an error while processing your request"
+  }
+  ```
+
+**Database Connection Errors:**
+
+If the database is unavailable during initial contract creation, the endpoint returns HTTP 500:
+```json
+{
+  "detail": "Failed to process contract: (psycopg2.OperationalError) could not connect to server"
+}
+```
+
+**Client Guidance:**
+
+1. **Always check the `status` field** to determine processing outcome:
+   - `completed`: Use both clauses and entities
+   - `completed_with_warnings`: Use clauses; entities array will be empty; check `message` for reason
+   - `failed`: Processing failed entirely
+
+2. **Check array lengths**: Even with status `completed`, arrays may be empty if no clauses/entities were found
+
+3. **Retry Logic**:
+   - For OpenAI rate limits (429): Implement exponential backoff (wait 60s, 120s, 240s)
+   - For OpenAI timeouts: Retry immediately (timeout may be transient)
+   - For 500 errors: Retry with exponential backoff (5s, 10s, 20s)
+   - For 409 conflicts: Do not retry (indicates data integrity issue)
+
+4. **Timeouts**: Set client timeout to at least 60 seconds (entity extraction via OpenAI can take 10-30s for large contracts)
+
+**FastAPI Response Models:**
+
+The endpoint uses Pydantic models for validation:
+```python
+class ContractSegmentResponse(BaseModel):
+    contract_id: int
+    status: str  # "completed" | "completed_with_warnings" | "failed"
+    clauses: List[ClauseResponse]
+    entities: List[EntityResponse]
+    message: str
+```
+
+See `/docs` (Swagger UI) or `/redoc` (ReDoc) for interactive API documentation with live examples.
+
 **What this endpoint does:**
 - Persists the contract to the database
 - Segments the contract into numbered clauses using regex-based pattern matching (`segment_contract()` function)
@@ -277,14 +401,67 @@ Returns status and version information.
 
 **Architecture Note:** Clause segmentation and entity extraction are intentionally separated. The `segment_contract()` function remains pure for regex-based clause splitting, while AI-powered entity extraction is orchestrated separately in the endpoint, enabling clear separation of concerns between structural parsing and semantic analysis.
 
+**Production-Readiness Considerations:**
+
+1. **OpenAI HTTP Timeouts** (Not yet implemented - TODO):
+   - **Connect timeout**: 10 seconds (time to establish connection)
+   - **Request timeout**: 60 seconds (total time for request/response)
+   - Configure in `app/services/entity_extractor.py` when initializing the OpenAI client:
+     ```python
+     client = OpenAI(
+         api_key=settings.openai_api_key,
+         timeout=httpx.Timeout(10.0, read=60.0)  # connect=10s, read=60s
+     )
+     ```
+
+2. **Retry Policy with Exponential Backoff** (Not yet implemented - TODO):
+   - **Max attempts**: 3 (default)
+   - **Backoff strategy**: Exponential with jitter (e.g., 2^attempt * random(0.5, 1.5) seconds)
+   - **Retryable errors**:
+     - OpenAI 429 (rate limit)
+     - OpenAI 500/502/503/504 (server errors)
+     - Network timeouts (ConnectTimeout, ReadTimeout)
+   - **Non-retryable errors**: 400 (bad request), 401 (auth), 413 (payload too large)
+   - Implementation: Use `tenacity` library in `app/services/entity_extractor.py`:
+     ```python
+     from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
+
+     @retry(
+         stop=stop_after_attempt(3),
+         wait=wait_exponential_jitter(initial=2, max=30, jitter=1.5),
+         retry=retry_if_exception_type((RateLimitError, APITimeoutError, InternalServerError))
+     )
+     def extract_entities(contract_text: str):
+         ...
+     ```
+
+3. **Idempotency Keys for Non-Idempotent Writes** (Not yet implemented - TODO):
+   - **Requirement**: Clients should send `Idempotency-Key` header with unique identifier (e.g., UUID) for each `POST /contracts/segment` request
+   - **Server behavior**: Deduplicate requests with the same key within a 24-hour window (store key + response hash in cache/database)
+   - **Header format**: `Idempotency-Key: <uuid-v4>`
+   - **Implementation location**: Add middleware in `app/main.py` to check/store idempotency keys before processing
+   - **Example**:
+     ```bash
+     curl -X POST http://localhost:8000/contracts/segment \
+       -H "Content-Type: application/json" \
+       -H "Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000" \
+       -d '{"text": "..."}'
+     ```
+   - If duplicate key is detected, return cached response with HTTP 200 (not 409) to maintain idempotency semantics
+
+**References:**
+- [OpenAI Python Client Timeouts](https://github.com/openai/openai-python#timeouts)
+- [Tenacity Retry Library](https://tenacity.readthedocs.io/)
+- [Idempotency Keys Pattern](https://stripe.com/docs/api/idempotent_requests)
+
 ### Entity Retrieval
 
 **`GET /contracts/{id}/entities`** - Retrieve all extracted entities for a contract
 
 **Optional Query Parameter:**
-- `entity_type` - Filter by specific type (party/date/financial_term/governing_law/obligation)
+- `entity_type` - Filter by specific type (party/date/financial_term/governing_law/obligation). Case-insensitive.
 
-**Response:**
+**Success Response (HTTP 200):**
 ```json
 {
   "contract_id": 1,
@@ -306,6 +483,55 @@ Returns status and version information.
     "obligation": 1
   }
 }
+```
+
+**Empty Result (HTTP 200):**
+If no entities exist for the contract or filter criteria:
+```json
+{
+  "contract_id": 1,
+  "entities": [],
+  "total_count": 0,
+  "entity_types": {}
+}
+```
+
+**Error Responses:**
+
+- **404 Not Found** - Contract does not exist
+  ```json
+  {
+    "detail": "Contract 999 not found"
+  }
+  ```
+
+- **500 Internal Server Error** - Database error or unexpected exception
+  ```json
+  {
+    "detail": "Failed to retrieve entities"
+  }
+  ```
+
+**Client Guidance:**
+
+1. **Always check `total_count`**: A value of 0 means no entities were extracted (possibly due to extraction failure during upload or no entities present in text)
+
+2. **Empty `entities` array is valid**: Contracts may legitimately have no entities, or entity extraction may have failed during upload (check contract's `status` field via the upload response or database)
+
+3. **Case-insensitive filtering**: The `entity_type` parameter accepts any case variation ("Party", "PARTY", "party" all work)
+
+4. **Retry Logic**:
+   - For 404 errors: Do not retry (contract doesn't exist)
+   - For 500 errors: Retry with exponential backoff (2s, 4s, 8s)
+
+**FastAPI Response Models:**
+
+```python
+class EntitiesListResponse(BaseModel):
+    contract_id: int
+    entities: List[EntityResponse]
+    total_count: int
+    entity_types: dict  # Type counts, e.g., {"party": 2, "date": 5}
 ```
 
 ## Example Usage

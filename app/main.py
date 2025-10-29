@@ -201,7 +201,7 @@ def upload_and_segment(
         for entity_dict in entity_dicts:
             entity_model = Entity(
                 contract_id=contract.id,
-                entity_type=entity_dict["entity_type"],
+                entity_type=entity_dict["entity_type"].lower(),  # Normalize to lowercase
                 value=entity_dict["value"],
                 context=entity_dict.get("context"),
                 confidence=entity_dict.get("confidence", "medium")

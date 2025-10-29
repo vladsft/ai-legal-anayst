@@ -369,14 +369,18 @@ def create_entity(
     """
     entity = Entity(
         contract_id=contract_id,
-        entity_type=entity_type,
+        entity_type=entity_type.lower(),  # Normalize to lowercase for consistent querying
         value=value,
         context=context,
         confidence=confidence
     )
     db.add(entity)
-    db.commit()
-    db.refresh(entity)
+    try:
+        db.commit()
+        db.refresh(entity)
+    except Exception as e:
+        db.rollback()
+        raise
     return entity
 
 
@@ -443,10 +447,14 @@ def get_entities_by_type(
 
     Returns:
         List of entity objects matching the type for the specified contract
+
+    Note:
+        Uses case-insensitive comparison via SQL lower() to handle entity_type variations.
+        TODO: Migrate to DB Enum or CHECK constraint to enforce allowed entity types at schema level.
     """
     return db.query(Entity).filter(
         Entity.contract_id == contract_id,
-        Entity.entity_type == entity_type
+        func.lower(Entity.entity_type) == entity_type.lower()
     ).all()
 
 
