@@ -97,3 +97,61 @@ class EntitiesListResponse(BaseModel):
     entities: List[EntityResponse] = Field(default_factory=list, description="List of entities")
     total_count: int = Field(..., description="Total number of entities")
     entity_types: dict = Field(default_factory=dict, description="Breakdown by type (e.g., {'party': 2, 'date': 5})")
+
+
+class JurisdictionAnalysisResponse(BaseModel):
+    """
+    Response schema for the POST /contracts/{id}/analyze-jurisdiction endpoint.
+
+    This is the main response returned after performing UK contract law analysis.
+    It includes jurisdiction detection, applicable statutes, legal principles,
+    enforceability assessment, clause interpretations, and recommendations.
+
+    The analysis is performed using OpenAI GPT-4o and provides comprehensive
+    legal insights specific to UK (England and Wales) contract law.
+
+    DISCLAIMER: This analysis is for informational purposes only and does NOT
+    constitute legal advice. Consult qualified legal professionals for actual
+    legal guidance on contract matters.
+    """
+    model_config = ConfigDict(from_attributes=True)
+
+    contract_id: int = Field(..., description="Contract database ID")
+    jurisdiction_confirmed: str = Field(..., description="Detected jurisdiction (e.g., 'England and Wales', 'UK', 'Scotland', 'Northern Ireland', or 'Unknown')")
+    confidence: str = Field(..., description="Detection confidence level: 'high' (explicit law selection), 'medium' (strong indicators), or 'low' (uncertain)")
+    applicable_statutes: List[str] = Field(default_factory=list, description="List of relevant UK statutes (e.g., 'Consumer Rights Act 2015', 'Unfair Contract Terms Act 1977')")
+    legal_principles: List[str] = Field(default_factory=list, description="Key UK legal principles that apply (e.g., 'Freedom of contract', 'Contra proferentem rule')")
+    enforceability_assessment: str = Field(..., description="Overall enforceability assessment under UK law (comprehensive 2-4 paragraph analysis)")
+    key_considerations: List[str] = Field(default_factory=list, description="Important UK-specific legal points and potential issues")
+    clause_interpretations: List[dict] = Field(default_factory=list, description="Clause-specific interpretations with 'clause' and 'interpretation' fields")
+    recommendations: List[str] = Field(default_factory=list, description="Suggestions for improving UK law compliance")
+    analyzed_at: datetime = Field(..., description="Timestamp when the analysis was performed")
+
+    @field_validator('confidence')
+    @classmethod
+    def validate_confidence(cls, v: str) -> str:
+        """Validate that confidence is one of 'high', 'medium', or 'low' and normalize to lowercase."""
+        if not v:
+            raise ValueError('Confidence value must not be empty')
+        normalized = v.lower()
+        valid_values = ['high', 'medium', 'low']
+        if normalized not in valid_values:
+            raise ValueError(f"Confidence must be one of {valid_values}, got '{v}'")
+        return normalized
+
+
+class JurisdictionSummaryResponse(BaseModel):
+    """
+    Response schema for simplified jurisdiction analysis summaries.
+
+    This is a condensed version of JurisdictionAnalysisResponse, useful for
+    listing or displaying jurisdiction information without full analysis details.
+    Contains only the key summary information.
+    """
+    model_config = ConfigDict(from_attributes=True)
+
+    contract_id: int = Field(..., description="Contract database ID")
+    jurisdiction: str = Field(..., description="Confirmed jurisdiction")
+    confidence: str = Field(..., description="Detection confidence level: 'high', 'medium', or 'low'")
+    enforceability: str = Field(..., description="Brief enforceability summary (first 200 characters)")
+    analyzed_at: datetime = Field(..., description="Timestamp when the analysis was performed")

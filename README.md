@@ -6,6 +6,7 @@ An AI-powered system for reading, interpreting, and contextualizing legal contra
 
 - **Contract Parsing**: Automated segmentation of contracts into individual clauses with database persistence
 - **AI-Powered Entity Recognition**: Intelligent extraction of parties, dates, financial terms, governing laws, and obligations using OpenAI GPT-4o
+- **Jurisdiction-Aware Analysis**: UK contract law analysis with statute identification, enforceability assessment, and legal principle mapping using OpenAI GPT-4o
 - **Risk Analysis**: AI-powered assessment of contractual risks and obligations *(planned)*
 - **Plain-Language Summaries**: Convert complex legal language into accessible explanations *(planned)*
 - **Interactive Q&A**: Ask questions about contract terms and receive contextualized answers *(planned)*
@@ -534,6 +535,91 @@ class EntitiesListResponse(BaseModel):
     entity_types: dict  # Type counts, e.g., {"party": 2, "date": 5}
 ```
 
+### Jurisdiction Analysis
+
+**`POST /contracts/{id}/analyze-jurisdiction`** - Analyze contract through UK contract law lens
+
+**Description:**
+Performs comprehensive jurisdiction analysis of a contract, identifying applicable UK statutes, legal principles, enforceability considerations, and providing clause-specific interpretations under UK law.
+
+**Path Parameters:**
+- `id` - Contract database ID (integer)
+
+**Success Response (HTTP 200):**
+```json
+{
+  "contract_id": 1,
+  "jurisdiction_confirmed": "England and Wales",
+  "confidence": "high",
+  "applicable_statutes": [
+    "Consumer Rights Act 2015",
+    "Unfair Contract Terms Act 1977"
+  ],
+  "legal_principles": [
+    "Freedom of contract",
+    "Contra proferentem rule for ambiguous terms"
+  ],
+  "enforceability_assessment": "The contract appears generally enforceable under UK law, subject to the considerations noted below...",
+  "key_considerations": [
+    "Limitation of liability clause may be subject to reasonableness test under UCTA 1977",
+    "Termination clause provides adequate notice period under common law"
+  ],
+  "clause_interpretations": [
+    {
+      "clause": "Clause 5 - Limitation of Liability",
+      "interpretation": "Under UCTA 1977, this clause must satisfy the reasonableness test..."
+    }
+  ],
+  "recommendations": [
+    "Consider adding explicit force majeure clause (not implied in English law)",
+    "Ensure jurisdiction clause specifies exclusive or non-exclusive jurisdiction"
+  ],
+  "analyzed_at": "2025-10-28T10:00:00Z"
+}
+```
+
+**Error Responses:**
+
+- **404 Not Found** - Contract does not exist
+  ```json
+  {
+    "detail": "Contract 999 not found"
+  }
+  ```
+
+- **500 Internal Server Error** - Analysis failed (OpenAI error, parsing error, etc.)
+  ```json
+  {
+    "detail": "Jurisdiction analysis failed: <error description>"
+  }
+  ```
+
+**Client Guidance:**
+
+1. **Caching**: The endpoint caches analysis results. Subsequent requests for the same contract return cached data without calling OpenAI API again.
+
+2. **Jurisdiction Field**: After successful analysis, the contract's `jurisdiction` field is automatically updated with the detected jurisdiction.
+
+3. **Retry Logic**:
+   - For 404 errors: Do not retry (contract doesn't exist)
+   - For 500 errors: Retry with exponential backoff (5s, 10s, 20s)
+   - For OpenAI rate limits: Wait and retry (60s, 120s)
+
+4. **Timeouts**: Set client timeout to at least 60 seconds (UK law analysis can take 15-45 seconds for complex contracts)
+
+**What this endpoint does:**
+- Analyzes contract through UK contract law lens using OpenAI GPT-4o
+- Identifies applicable UK statutes (Consumer Rights Act, UCTA, etc.)
+- Maps relevant legal principles (freedom of contract, contra proferentem, etc.)
+- Assesses overall enforceability under UK law
+- Provides clause-specific interpretations with legal reasoning
+- Offers recommendations for UK law compliance
+- Stores analysis results in database for future reference
+- Updates contract's jurisdiction field with detected jurisdiction
+
+**Legal Disclaimer:**
+This analysis is for informational purposes only and does not constitute legal advice. Consult a qualified solicitor for actual legal guidance on contract matters.
+
 ## Example Usage
 
 ### 1. Start the server
@@ -559,6 +645,11 @@ curl http://localhost:8000/contracts/1/entities
 
 # Get only financial terms
 curl http://localhost:8000/contracts/1/entities?entity_type=financial_term
+```
+
+### 4. Analyze jurisdiction (UK contract law)
+```bash
+curl -X POST http://localhost:8000/contracts/1/analyze-jurisdiction
 ```
 
 ## Entity Types
@@ -593,6 +684,7 @@ ai-legal-anayst/
 │   ├── main.py           # FastAPI application with endpoints
 │   │                     # - POST /contracts/segment: Process contracts with AI
 │   │                     # - GET /contracts/{id}/entities: Retrieve entities
+│   │                     # - POST /contracts/{id}/analyze-jurisdiction: UK law analysis
 │   │                     # - segment_contract() function for clause extraction
 │   ├── schemas.py        # Pydantic models for API requests/responses
 │   ├── config.py         # Configuration management with pydantic-settings
@@ -600,9 +692,13 @@ ai-legal-anayst/
 │   ├── models.py         # SQLAlchemy ORM models (6 tables)
 │   ├── crud.py           # CRUD operations for database entities
 │   ├── db_init.py        # Database initialization script
+│   ├── jurisdictions/    # Jurisdiction-specific legal configurations
+│   │   ├── __init__.py
+│   │   └── uk_config.py  # UK contract law principles and prompt templates
 │   └── services/         # Business logic and external service integrations
 │       ├── __init__.py
-│       └── entity_extractor.py  # OpenAI-powered entity extraction service
+│       ├── entity_extractor.py    # OpenAI-powered entity extraction service
+│       └── jurisdiction_analyzer.py  # OpenAI-powered UK law analysis
 ├── .env                  # Environment variables (DO NOT COMMIT)
 ├── .env.example          # Environment template
 ├── requirements.txt      # Python dependencies
@@ -619,6 +715,7 @@ ai-legal-anayst/
 - **OpenAI GPT-4o**: Large language model for AI-powered entity extraction and contract analysis
 - **Pydantic**: Data validation and settings management
 - **Structured JSON Output**: GPT-4o's JSON mode for reliable entity extraction
+- **UK Contract Law Analysis**: Jurisdiction-aware legal reasoning with statute identification and enforceability assessment
 
 ## Development Status
 
@@ -646,8 +743,22 @@ ai-legal-anayst/
   - `GET /contracts/{id}/entities` - Retrieve entities with type filtering
   - `GET /health` - Service health check
 
+### ✅ Completed Features (Phase 2)
+- **Jurisdiction-Aware Analysis (UK Contract Law)**
+  - OpenAI GPT-4o-powered legal analysis
+  - Automatic jurisdiction detection and confirmation
+  - Identification of applicable UK statutes (Consumer Rights Act, UCTA, etc.)
+  - Mapping of relevant legal principles
+  - Enforceability assessment under UK law
+  - Clause-specific interpretations with legal reasoning
+  - Recommendations for UK law compliance
+  - Database persistence of analysis results
+  - Caching to prevent redundant API calls
+
+- **API Endpoints**
+  - `POST /contracts/{id}/analyze-jurisdiction` - UK law analysis
+
 ### 📋 Planned Features (Future Phases)
-- **Phase 2**: Jurisdiction analysis and detection
 - **Phase 3**: Risk assessment and obligation tracking
 - **Phase 4**: Plain-language contract summaries
 - **Phase 5**: Semantic search with vector embeddings
@@ -686,6 +797,13 @@ ai-legal-anayst/
 - Reinstall dependencies: `pip install -r requirements.txt`
 - Check Python version: `python --version` (should be 3.11+)
 
+**Jurisdiction analysis fails or returns errors:**
+- Verify OpenAI API key has GPT-4o access
+- Check application logs for detailed error messages
+- Ensure contract text is substantial enough for analysis (> 100 characters)
+- Verify database connection for storing analysis results
+- Check OpenAI API usage limits and quotas
+
 ## Security Notes
 
 - **Never commit the `.env` file** - it contains sensitive API keys
@@ -693,6 +811,23 @@ ai-legal-anayst/
 - **Rotate your API keys immediately** if they are exposed or committed accidentally
 - The `.env` file is already included in `.gitignore` to prevent accidental commits
 - Review OpenAI's best practices for API key security: https://platform.openai.com/docs/guides/safety-best-practices
+
+## Legal Disclaimer
+
+**IMPORTANT**: This application provides AI-powered contract analysis for informational and educational purposes only. The jurisdiction analysis, legal interpretations, and recommendations generated by this system:
+
+- **Do NOT constitute legal advice**
+- **Should NOT be relied upon** for legal decision-making
+- **Are NOT a substitute** for consultation with qualified legal professionals
+- **May contain errors or omissions** despite best efforts at accuracy
+
+UK contract law is complex and fact-specific. Always consult a qualified solicitor or barrister for:
+- Legal advice on specific contracts
+- Assessment of legal rights and obligations
+- Guidance on contract negotiation or disputes
+- Compliance with applicable laws and regulations
+
+The developers and operators of this system accept no liability for any decisions made based on the analysis provided by this application.
 
 ## License
 

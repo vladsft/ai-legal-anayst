@@ -13,11 +13,12 @@ Error handling notes:
 """
 
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any, Tuple
 from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy import func
-from app.models import Contract, Clause, Entity
+from app.models import Contract, Clause, Entity, Summary
+import json
 
 
 # ============================================================================
@@ -365,8 +366,12 @@ def create_entity(
         Entity: Created entity object with auto-generated ID
 
     Raises:
+        ValueError: If entity_type is None or empty
         SQLAlchemyError: On database operation failure
     """
+    if not entity_type:
+        raise ValueError("entity_type is required and cannot be empty")
+
     entity = Entity(
         contract_id=contract_id,
         entity_type=entity_type.lower(),  # Normalize to lowercase for consistent querying
@@ -378,7 +383,7 @@ def create_entity(
     try:
         db.commit()
         db.refresh(entity)
-    except Exception as e:
+    except SQLAlchemyError:
         db.rollback()
         raise
     return entity
@@ -449,12 +454,21 @@ def get_entities_by_type(
         List of entity objects matching the type for the specified contract
 
     Note:
-        Uses case-insensitive comparison via SQL lower() to handle entity_type variations.
+        Compares normalized lowercase entity_type. Since all writes normalize to lowercase
+        (see create_entity), we can do direct comparison without SQL lower() for better performance.
+        After running migration 001_normalize_entity_type.sql, all existing data will be lowercase.
         TODO: Migrate to DB Enum or CHECK constraint to enforce allowed entity types at schema level.
+
+    Raises:
+        ValueError: If entity_type is None or empty
     """
+    if not entity_type:
+        raise ValueError("entity_type is required and cannot be empty")
+
+    # Direct comparison - data is normalized to lowercase on write
     return db.query(Entity).filter(
         Entity.contract_id == contract_id,
-        func.lower(Entity.entity_type) == entity_type.lower()
+        Entity.entity_type == entity_type.lower()
     ).all()
 
 
@@ -483,3 +497,240 @@ def count_entities_by_type(db: Session, contract_id: int) -> dict:
 
     # Convert list of tuples to dictionary
     return {entity_type: count for entity_type, count in results}
+
+
+# ============================================================================
+# Summary CRUD Operations (used for jurisdiction analysis, summaries, etc.)
+# ============================================================================
+
+
+def create_summary(
+    db: Session,
+    contract_id: int,
+    summary_type: str,
+    content: str,
+    role: Optional[str] = None
+) -> Summary:
+    """
+    Create a new summary record.
+
+    This creates a summary record that can be used for multiple purposes:
+    - Jurisdiction analysis (summary_type='jurisdiction_analysis', role=None)
+    - Role-specific summaries in future phase 4 (summary_type='role_specific', role='cfo'/'legal'/etc.)
+    - Plain-language summaries (summary_type='plain_language', role=None)
+
+    For jurisdiction analysis, use summary_type='jurisdiction_analysis' and role=None.
+    The content should be a string - use json.dumps() for structured data.
+
+    Args:
+        db: Database session
+        contract_id: Parent contract ID
+        summary_type: Type of summary (e.g., 'jurisdiction_analysis', 'role_specific', 'plain_language')
+        content: Summary content as string (use json.dumps() for structured data)
+        role: Optional role for role-specific summaries (e.g., 'cfo', 'legal')
+
+    Returns:
+        Summary: Created summary object with auto-generated ID and timestamp
+
+    Raises:
+        IntegrityError: For foreign key violations (invalid contract_id)
+        SQLAlchemyError: On other database operation failures
+    """
+    summary = Summary(
+        contract_id=contract_id,
+        summary_type=summary_type,
+        content=content,
+        role=role
+    )
+    db.add(summary)
+    try:
+        db.commit()
+        db.refresh(summary)
+    except Exception as e:
+        db.rollback()
+        raise
+    return summary
+
+
+def get_summaries_by_contract(
+    db: Session,
+    contract_id: int,
+    summary_type: Optional[str] = None
+) -> List[Summary]:
+    """
+    Retrieve all summaries for a contract, optionally filtered by type.
+
+    This retrieves summaries from the database, with optional filtering by summary_type.
+    For jurisdiction analysis, use summary_type='jurisdiction_analysis'.
+    Returns most recent summaries first.
+
+    Args:
+        db: Database session
+        contract_id: Parent contract ID
+        summary_type: Optional summary type filter (e.g., 'jurisdiction_analysis')
+
+    Returns:
+        List of summary objects, ordered by created_at descending (most recent first)
+
+    Example:
+        >>> # Get all summaries for a contract
+        >>> summaries = get_summaries_by_contract(db, contract_id=1)
+        >>> # Get only jurisdiction analysis summaries
+        >>> jurisdiction_summaries = get_summaries_by_contract(db, contract_id=1, summary_type='jurisdiction_analysis')
+    """
+    query = db.query(Summary).filter(Summary.contract_id == contract_id)
+
+    if summary_type:
+        query = query.filter(Summary.summary_type == summary_type)
+
+    return query.order_by(Summary.created_at.desc()).all()
+
+
+def get_latest_summary(
+    db: Session,
+    contract_id: int,
+    summary_type: str
+) -> Optional[Summary]:
+    """
+    Get the most recent summary of a specific type for a contract.
+
+    This is useful for retrieving the latest jurisdiction analysis or other
+    summary types. Returns None if no summary of that type exists.
+
+    Args:
+        db: Database session
+        contract_id: Parent contract ID
+        summary_type: Summary type to filter by (e.g., 'jurisdiction_analysis')
+
+    Returns:
+        Summary object or None if no summary of that type exists
+
+    Example:
+        >>> # Get the most recent jurisdiction analysis
+        >>> latest = get_latest_summary(db, contract_id=1, summary_type='jurisdiction_analysis')
+        >>> if latest:
+        ...     print(f"Analysis from {latest.created_at}")
+    """
+    return db.query(Summary).filter(
+        Summary.contract_id == contract_id,
+        Summary.summary_type == summary_type
+    ).order_by(Summary.created_at.desc()).first()
+
+
+def delete_summaries_by_type(
+    db: Session,
+    contract_id: int,
+    summary_type: str
+) -> int:
+    """
+    Delete all summaries of a specific type for a contract.
+
+    This is useful for clearing old analyses before creating new ones,
+    or for implementing a "re-analyze" feature that clears previous results.
+
+    Args:
+        db: Database session
+        contract_id: Parent contract ID
+        summary_type: Summary type to delete (e.g., 'jurisdiction_analysis')
+
+    Returns:
+        int: Number of summaries deleted
+
+    Example:
+        >>> # Clear all jurisdiction analysis summaries for a contract
+        >>> deleted = delete_summaries_by_type(db, contract_id=1, summary_type='jurisdiction_analysis')
+        >>> print(f"Deleted {deleted} summaries")
+    """
+    deleted_count = db.query(Summary).filter(
+        Summary.contract_id == contract_id,
+        Summary.summary_type == summary_type
+    ).delete()
+    db.commit()
+    return deleted_count
+
+
+def create_jurisdiction_analysis(
+    db: Session,
+    contract_id: int,
+    analysis_data: Dict[str, Any]
+) -> Summary:
+    """
+    Convenience function for creating jurisdiction analysis records.
+
+    This function automatically sets summary_type to 'jurisdiction_analysis'
+    and serializes the analysis data to JSON for storage. This is the
+    recommended way to store jurisdiction analysis results.
+
+    Args:
+        db: Database session
+        contract_id: Parent contract ID
+        analysis_data: Dictionary containing jurisdiction analysis results
+                       (from app.services.jurisdiction_analyzer.analyze_jurisdiction)
+
+    Returns:
+        Summary: Created summary object with jurisdiction analysis data
+
+    Raises:
+        IntegrityError: For foreign key violations (invalid contract_id)
+        SQLAlchemyError: On database operation failure
+
+    Example:
+        >>> from app.services.jurisdiction_analyzer import analyze_jurisdiction
+        >>> analysis_data, error = analyze_jurisdiction(contract.text, contract.id)
+        >>> if not error:
+        ...     summary = create_jurisdiction_analysis(db, contract.id, analysis_data)
+        ...     print(f"Jurisdiction analysis saved at {summary.created_at}")
+    """
+    json_content = json.dumps(analysis_data, indent=2)
+    return create_summary(
+        db=db,
+        contract_id=contract_id,
+        summary_type='jurisdiction_analysis',
+        content=json_content,
+        role=None
+    )
+
+
+def get_jurisdiction_analysis(
+    db: Session,
+    contract_id: int
+) -> Tuple[Optional[Summary], Optional[Dict[str, Any]]]:
+    """
+    Convenience function for retrieving jurisdiction analysis.
+
+    This function retrieves the most recent jurisdiction analysis for a contract
+    and automatically parses the JSON content back into a dictionary.
+    Returns both the Summary ORM object and the parsed analysis data.
+
+    Args:
+        db: Database session
+        contract_id: Parent contract ID
+
+    Returns:
+        Tuple of (Summary object, parsed analysis dict) or (None, None) if not found
+
+    Example:
+        >>> summary, analysis_data = get_jurisdiction_analysis(db, contract_id=1)
+        >>> if summary:
+        ...     print(f"Jurisdiction: {analysis_data['jurisdiction_confirmed']}")
+        ...     print(f"Confidence: {analysis_data['confidence']}")
+        ...     print(f"Analyzed at: {summary.created_at}")
+        >>> else:
+        ...     print("No jurisdiction analysis found")
+    """
+    summary = get_latest_summary(
+        db=db,
+        contract_id=contract_id,
+        summary_type='jurisdiction_analysis'
+    )
+
+    if summary:
+        try:
+            parsed_data = json.loads(summary.content)
+            return summary, parsed_data
+        except json.JSONDecodeError as e:
+            # Log error but return the summary object with None for data
+            # This allows caller to see that analysis exists but couldn't be parsed
+            return summary, None
+
+    return None, None
