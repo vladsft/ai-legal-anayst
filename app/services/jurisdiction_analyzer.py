@@ -87,6 +87,7 @@ def normalize_jurisdiction(jurisdiction: str) -> str:
 
     Returns:
         str: Canonical jurisdiction code (e.g., 'UK_EW', 'UK_SC')
+               Returns 'UNKNOWN' for None, empty, or non-string inputs
 
     Examples:
         >>> normalize_jurisdiction('England and Wales')
@@ -95,7 +96,16 @@ def normalize_jurisdiction(jurisdiction: str) -> str:
         'UK_SC'
         >>> normalize_jurisdiction('New York')
         'New York'  # Returns original if no mapping exists
+        >>> normalize_jurisdiction(None)
+        'UNKNOWN'
+        >>> normalize_jurisdiction('')
+        'UNKNOWN'
     """
+    # Input validation - handle None, non-string, and empty values
+    if jurisdiction is None or not isinstance(jurisdiction, str) or jurisdiction.strip() == "":
+        logger.warning(f"Invalid jurisdiction input: {repr(jurisdiction)}. Returning 'UNKNOWN'")
+        return 'UNKNOWN'
+
     # Try to find mapping (case-insensitive)
     normalized = JURISDICTION_MAPPING.get(jurisdiction.lower())
 
