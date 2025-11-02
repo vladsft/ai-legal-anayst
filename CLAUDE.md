@@ -21,7 +21,7 @@ This file provides comprehensive guidance to Claude Code (claude.ai/code) when w
 - **PostgreSQL 14+**: Relational database with pgvector extension
 - **pgvector**: Vector similarity search for semantic analysis (text-embedding-3-small, 1536 dimensions)
 - **SQLAlchemy 2.0**: Modern ORM with type hints and declarative base
-- **OpenAI GPT-4o**: AI model for entity extraction, jurisdiction analysis, and risk assessment
+- **OpenAI GPT-4o-mini**: AI model for entity extraction, jurisdiction analysis, and risk assessment
 - **Pydantic v2**: Data validation and settings management
 - **Uvicorn**: ASGI server with hot reload support
 
@@ -34,7 +34,7 @@ This file provides comprehensive guidance to Claude Code (claude.ai/code) when w
 └────────┬────────┘
          │
          ├──> Services (app/services/)
-         │    ├── entity_extractor.py    - OpenAI GPT-4o entity extraction
+         │    ├── entity_extractor.py    - OpenAI GPT-4o-mini entity extraction
          │    ├── jurisdiction_analyzer.py - UK law analysis with statute identification
          │    ├── risk_analyzer.py       - 10-category risk detection
          │    └── openai_client.py       - Shared OpenAI client (thread-safe)
@@ -84,7 +84,7 @@ This file provides comprehensive guidance to Claude Code (claude.ai/code) when w
      2. Updates status to 'processing'
      3. Segments contract into clauses (`segment_contract`)
      4. Persists clauses to database (`crud.bulk_create_clauses`)
-     5. Extracts entities using OpenAI GPT-4o (`extract_entities`)
+     5. Extracts entities using OpenAI GPT-4o-mini (`extract_entities`)
      6. Persists entities to database (`crud.bulk_create_entities`)
      7. Auto-detects jurisdiction if not provided (`analyze_jurisdiction`)
      8. Updates contract status to 'completed' or 'completed_with_warnings'
@@ -228,9 +228,9 @@ This file provides comprehensive guidance to Claude Code (claude.ai/code) when w
 
 ### 4. [app/services/entity_extractor.py](app/services/entity_extractor.py) - AI Entity Extraction
 
-**Purpose**: Extracts structured entities from contracts using OpenAI GPT-4o.
+**Purpose**: Extracts structured entities from contracts using OpenAI GPT-4o-mini.
 
-**Model**: gpt-4o with temperature=0.1 (deterministic), JSON mode enabled
+**Model**: gpt-4o-mini with temperature=0.1 (deterministic), JSON mode enabled
 
 **Entity Types** (line 40):
 - `party`: Companies, individuals, organizations
@@ -259,9 +259,9 @@ This file provides comprehensive guidance to Claude Code (claude.ai/code) when w
 
 ### 5. [app/services/jurisdiction_analyzer.py](app/services/jurisdiction_analyzer.py) - UK Law Analysis
 
-**Purpose**: Analyzes contracts through UK contract law lens using OpenAI GPT-4o.
+**Purpose**: Analyzes contracts through UK contract law lens using OpenAI GPT-4o-mini.
 
-**Model**: gpt-4o with temperature=0.2 (slight creativity for legal reasoning), JSON mode enabled
+**Model**: gpt-4o-mini with temperature=0.2 (slight creativity for legal reasoning), JSON mode enabled
 
 **Key Function**:
 - **`analyze_jurisdiction(contract_text: str, contract_id: int) -> Tuple[Dict, Optional[str]]`** (lines 195-342)
@@ -297,7 +297,7 @@ This file provides comprehensive guidance to Claude Code (claude.ai/code) when w
 
 **Purpose**: Detects risky, unfair, or unusual clauses across 10 risk categories.
 
-**Model**: gpt-4o with temperature=0.2 (balanced consistency/nuance), JSON mode enabled, max_tokens=4096
+**Model**: gpt-4o-mini with temperature=0.2 (balanced consistency/nuance), JSON mode enabled, max_tokens=4096
 
 **Risk Categories** (lines 64-75):
 - `termination_rights`: Unfavorable termination, unilateral terms, inadequate notice

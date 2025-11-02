@@ -160,17 +160,31 @@ curl -X POST http://localhost:8000/contracts/1/analyze-risks
   "contract_id": 1,
   "risks": [
     {
+      "id": 42,
+      "contract_id": 1,
+      "clause_id": 5,
       "risk_type": "liability_cap",
       "risk_level": "high",
-      "description": "Liability cap of £1,000 is only 2% of £50,000 contract value",
-      "justification": "This creates significant financial exposure as cap is drastically below contract value...",
-      "recommendation": "Negotiate to increase cap to at least 50% of contract value",
-      "clause_id": 5
+      "description": "The limitation of liability clause caps damages at £1,000, which is significantly below the contract value of £50,000.",
+      "justification": "This represents a high risk because the liability cap is only 2% of the contract value, leaving the client severely underprotected in case of breach. Industry standard is typically 100% of contract value or at least 50%. The cap applies to all damages including direct losses, which is unusually restrictive and could leave the client with substantial unrecoverable losses.",
+      "recommendation": "Negotiate to increase the liability cap to at least £25,000 (50% of contract value) or remove the cap for direct damages. Consider adding carve-outs for fraud, willful misconduct, and IP infringement which should remain uncapped.",
+      "assessed_at": "2025-11-02T10:15:30Z"
+    },
+    {
+      "id": 43,
+      "contract_id": 1,
+      "clause_id": 8,
+      "risk_type": "termination_rights",
+      "risk_level": "medium",
+      "description": "The supplier can terminate the contract with only 7 days notice for convenience, while the client requires 30 days notice.",
+      "justification": "This asymmetry creates moderate risk as the supplier can exit quickly, potentially disrupting the client's operations. However, 7 days may be sufficient for transition in some contexts. The lack of reciprocal termination rights is concerning and gives the supplier undue leverage.",
+      "recommendation": "Negotiate for equal termination notice periods (e.g., 30 days for both parties) or add provisions requiring the supplier to assist with transition during the notice period at no additional cost.",
+      "assessed_at": "2025-11-02T10:15:30Z"
     }
   ],
   "total_risks": 8,
   "risk_summary": {"high": 2, "medium": 4, "low": 2},
-  "analyzed_at": "2025-11-02T10:00:00Z"
+  "analyzed_at": "2025-11-02T10:15:30Z"
 }
 ```
 
@@ -209,7 +223,7 @@ Environment variables in `.env`:
 
 | Variable | Required | Description | Example |
 |----------|----------|-------------|---------|
-| `OPENAI_API_KEY` | Yes | OpenAI API key for GPT-4o | `sk-...` |
+| `OPENAI_API_KEY` | Yes | OpenAI API key for GPT-4o-mini | `sk-...` |
 | `DATABASE_URL` | Yes | PostgreSQL connection string | `postgresql://user:pass@localhost:5432/legal_analyst` |
 | `ENVIRONMENT` | No | Application environment | `development` (default) |
 | `LOG_LEVEL` | No | Logging level | `INFO` (default) |
@@ -218,7 +232,7 @@ Environment variables in `.env`:
 
 - **FastAPI** - Modern Python web framework
 - **PostgreSQL + pgvector** - Database with vector similarity search
-- **OpenAI GPT-4o** - AI model for entity extraction, jurisdiction analysis, and risk assessment
+- **OpenAI GPT-4o-mini** - AI model for entity extraction, jurisdiction analysis, and risk assessment
 - **SQLAlchemy 2.0** - ORM with type safety
 - **Pydantic v2** - Data validation
 
@@ -269,7 +283,7 @@ Environment variables in `.env`:
 
 **Empty entity results:**
 - Check contract text quality (needs substantive content)
-- Verify OpenAI API key has GPT-4o access
+- Verify OpenAI API key has GPT-4o-mini access
 - Review application logs for extraction errors
 - Ensure contract is longer than 50 characters
 

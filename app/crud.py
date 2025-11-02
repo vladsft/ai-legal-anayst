@@ -782,11 +782,16 @@ def create_risk_assessment(
         ...     clause_id=5, recommendation='Negotiate to increase cap to 50%'
         ... )
     """
+    # Normalize risk_type and risk_level: strip whitespace then lowercase
+    # Handle None safely by only normalizing if value is truthy
+    normalized_risk_type = risk_type.strip().lower() if risk_type else risk_type
+    normalized_risk_level = risk_level.strip().lower() if risk_level else risk_level
+
     risk = RiskAssessment(
         contract_id=contract_id,
         clause_id=clause_id,
-        risk_type=risk_type.lower(),  # Normalize to lowercase for consistent querying
-        risk_level=risk_level.lower(),  # Normalize to lowercase for consistent querying
+        risk_type=normalized_risk_type,  # Normalized: trimmed and lowercased
+        risk_level=normalized_risk_level,  # Normalized: trimmed and lowercased
         description=description,
         justification=justification,
         recommendation=recommendation

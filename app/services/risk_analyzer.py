@@ -55,7 +55,7 @@ from app.services.openai_client import get_openai_client
 logger = logging.getLogger(__name__)
 
 # Model configuration
-MODEL_NAME = "gpt-4o"
+MODEL_NAME = "gpt-4o-mini"
 
 # Token optimization settings
 MAX_CONTRACT_TEXT_LENGTH = 80000  # Cap contract text at ~80k chars to prevent token overflow
@@ -178,15 +178,19 @@ def _validate_risk_response(response: Dict[str, Any]) -> bool:
                 logger.error(f"Risk {idx} field '{field}' must be a non-empty string")
                 return False
 
-        # Validate risk_type
-        if risk["risk_type"].lower() not in RISK_TYPES:
+        # Validate and normalize risk_type (strip whitespace then lowercase)
+        normalized_type = risk["risk_type"].strip().lower()
+        if normalized_type not in RISK_TYPES:
             logger.error(f"Risk {idx} has invalid risk_type: {risk['risk_type']}")
             return False
+        risk["risk_type"] = normalized_type  # Update with normalized value
 
-        # Validate risk_level
-        if risk["risk_level"].lower() not in RISK_LEVELS:
+        # Validate and normalize risk_level (strip whitespace then lowercase)
+        normalized_level = risk["risk_level"].strip().lower()
+        if normalized_level not in RISK_LEVELS:
             logger.error(f"Risk {idx} has invalid risk_level: {risk['risk_level']}")
             return False
+        risk["risk_level"] = normalized_level  # Update with normalized value
 
         # Check optional fields are strings if present
         if "clause_reference" in risk and not isinstance(risk["clause_reference"], str):
@@ -349,9 +353,9 @@ Provide a comprehensive risk assessment following the instructions in the system
         # Enhance risk data with contract_id and clause matching
         risk_data_list = []
         for risk in risks:
-            # Normalize risk_type and risk_level
-            risk["risk_type"] = risk["risk_type"].lower()
-            risk["risk_level"] = risk["risk_level"].lower()
+            # Normalize risk_type and risk_level (strip whitespace then lowercase)
+            risk["risk_type"] = risk["risk_type"].strip().lower()
+            risk["risk_level"] = risk["risk_level"].strip().lower()
 
             # Add contract_id
             risk["contract_id"] = contract_id
