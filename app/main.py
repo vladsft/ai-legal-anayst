@@ -17,11 +17,13 @@ from app.schemas import (
     ContractSegmentResponse,
     ClauseResponse,
     EntityResponse,
-    EntitiesListResponse
+    EntitiesListResponse,
+    JurisdictionAnalysisResponse
 )
 
 # Service imports
 from app.services.entity_extractor import extract_entities
+from app.services.jurisdiction_analyzer import analyze_jurisdiction
 
 # CRUD and model imports
 from app import crud
@@ -188,7 +190,7 @@ def upload_and_segment(
                 logger.error(f"Failed to update contract status to 'failed': {status_err}", exc_info=True)
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=str(e)
+                detail="Duplicate clause detected. Contract processing failed."
             )
 
         # 5. Extract entities using OpenAI
@@ -221,7 +223,27 @@ def upload_and_segment(
                 db.refresh(entity)
             logger.info(f"Persisted {len(entity_models)} entities to database")
 
-        # 7. Update status based on extraction success
+        # 7. Best-effort jurisdiction detection if not provided
+        jurisdiction_failed = False
+        if req.jurisdiction is None:
+            try:
+                logger.info(f"No jurisdiction provided, attempting automatic detection for contract {contract.id}")
+                jurisdiction_data, jurisdiction_error = analyze_jurisdiction(req.text, contract.id)
+
+                if not jurisdiction_error and 'jurisdiction_code' in jurisdiction_data:
+                    # Update contract jurisdiction field with normalized code
+                    jurisdiction_code = jurisdiction_data['jurisdiction_code']
+                    logger.info(f"Auto-detected jurisdiction for contract {contract.id}: {jurisdiction_code}")
+                    crud.update_contract_jurisdiction(db, contract.id, jurisdiction_code)
+                else:
+                    logger.warning(f"Auto jurisdiction detection failed for contract {contract.id}: {jurisdiction_error}")
+                    jurisdiction_failed = True
+            except Exception as e:
+                # Don't fail the entire upload if jurisdiction detection fails
+                logger.warning(f"Exception during auto jurisdiction detection for contract {contract.id}: {e}")
+                jurisdiction_failed = True
+
+        # 8. Update status based on extraction success
         if extraction_failed:
             # Set status to completed_with_warnings if extraction failed but segmentation succeeded
             final_status = 'completed_with_warnings'
@@ -277,14 +299,14 @@ def upload_and_segment(
     except HTTPException:
         # Re-raise HTTP exceptions (like 409 Conflict) without converting to 500
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Contract processing failed")
 
         # Update contract status to failed if contract was created
         if contract:
             try:
                 crud.update_contract_status(db, contract.id, 'failed')
-            except Exception as status_err:
+            except Exception:
                 logger.exception("Failed to update contract status")
 
         # Return error response
@@ -358,5 +380,128 @@ def get_contract_entities(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve entities"
+        )
+
+
+@app.post("/contracts/{contract_id}/analyze-jurisdiction", response_model=JurisdictionAnalysisResponse)
+def analyze_contract_jurisdiction(
+    contract_id: int,
+    db: Session = Depends(get_db)
+) -> JurisdictionAnalysisResponse:
+    """
+    Analyze a contract through UK contract law lens.
+
+    This endpoint performs comprehensive jurisdiction analysis including:
+    - Jurisdiction detection and confirmation (UK, England and Wales, etc.)
+    - Identification of applicable UK statutes (Consumer Rights Act, UCTA, etc.)
+    - Mapping of relevant legal principles (formation, interpretation, unfair terms, etc.)
+    - Overall enforceability assessment under UK contract law
+    - Clause-specific interpretations with legal reasoning
+    - Recommendations for UK law compliance
+
+    The analysis is performed using OpenAI GPT-4o with UK legal expertise.
+    Results are cached in the database - subsequent requests return cached data
+    without calling the OpenAI API again.
+
+    Args:
+        contract_id: Contract database ID
+        db: Database session (injected)
+
+    Returns:
+        JurisdictionAnalysisResponse with comprehensive UK law analysis
+
+    Raises:
+        HTTPException: 404 if contract not found, 500 if analysis fails
+
+    DISCLAIMER:
+        This analysis is for informational purposes only and does NOT constitute
+        legal advice. Always consult qualified legal professionals for actual
+        legal guidance on contract matters.
+    """
+    try:
+        logger.info(f"Starting jurisdiction analysis for contract {contract_id}")
+
+        # 1. Validate contract exists
+        contract = crud.get_contract(db, contract_id)
+        if not contract:
+            logger.warning(f"Contract {contract_id} not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Contract {contract_id} not found"
+            )
+
+        # 2. Check for existing cached analysis
+        summary, cached_analysis = crud.get_jurisdiction_analysis(db, contract_id)
+
+        if summary and cached_analysis:
+            # Return cached analysis
+            logger.info(f"Returning cached jurisdiction analysis for contract {contract_id}")
+            return JurisdictionAnalysisResponse(
+                contract_id=contract_id,
+                jurisdiction_confirmed=cached_analysis['jurisdiction_confirmed'],
+                confidence=cached_analysis['confidence'],
+                applicable_statutes=cached_analysis.get('applicable_statutes', []),
+                legal_principles=cached_analysis.get('legal_principles', []),
+                enforceability_assessment=cached_analysis['enforceability_assessment'],
+                key_considerations=cached_analysis.get('key_considerations', []),
+                clause_interpretations=cached_analysis.get('clause_interpretations', []),
+                recommendations=cached_analysis.get('recommendations', []),
+                analyzed_at=summary.created_at
+            )
+        elif summary and cached_analysis is None:
+            # Cached analysis exists but JSON parsing failed - clear invalid record
+            logger.warning(f"Cached jurisdiction analysis for contract {contract_id} has invalid JSON, clearing record")
+            crud.delete_summaries_by_type(db, contract_id, 'jurisdiction_analysis')
+
+        # 3. Perform jurisdiction analysis using OpenAI
+        logger.info(f"No cached analysis found, performing new analysis for contract {contract_id}")
+        analysis_data, error = analyze_jurisdiction(contract.text, contract_id)
+
+        # Check if analysis failed
+        if error:
+            logger.error(f"Jurisdiction analysis failed for contract {contract_id}: {error}")
+            # Return 400 Bad Request for short/empty text errors, 500 for other errors
+            if "too short for jurisdiction analysis" in error or "empty" in error.lower():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=error
+                )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Jurisdiction analysis failed: {error}"
+            )
+
+        # 4. Update contract jurisdiction field with normalized code
+        if 'jurisdiction_code' in analysis_data:
+            jurisdiction_code = analysis_data['jurisdiction_code']
+            logger.info(f"Updating contract {contract_id} jurisdiction to: {jurisdiction_code}")
+            crud.update_contract_jurisdiction(db, contract_id, jurisdiction_code)
+
+        # 5. Store analysis results in database
+        logger.info(f"Storing jurisdiction analysis for contract {contract_id}")
+        summary = crud.create_jurisdiction_analysis(db, contract_id, analysis_data)
+
+        # 6. Build and return response
+        return JurisdictionAnalysisResponse(
+            contract_id=contract_id,
+            jurisdiction_confirmed=analysis_data['jurisdiction_confirmed'],
+            confidence=analysis_data['confidence'],
+            applicable_statutes=analysis_data.get('applicable_statutes', []),
+            legal_principles=analysis_data.get('legal_principles', []),
+            enforceability_assessment=analysis_data['enforceability_assessment'],
+            key_considerations=analysis_data.get('key_considerations', []),
+            clause_interpretations=analysis_data.get('clause_interpretations', []),
+            recommendations=analysis_data.get('recommendations', []),
+            analyzed_at=summary.created_at
+        )
+
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        logger.error(f"Failed to analyze jurisdiction for contract {contract_id}: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to analyze jurisdiction"
         )
 

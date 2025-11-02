@@ -6,6 +6,7 @@ An AI-powered system for reading, interpreting, and contextualizing legal contra
 
 - **Contract Parsing**: Automated segmentation of contracts into individual clauses with database persistence
 - **AI-Powered Entity Recognition**: Intelligent extraction of parties, dates, financial terms, governing laws, and obligations using OpenAI GPT-4o
+- **Jurisdiction-Aware Analysis**: UK contract law analysis with statute identification, enforceability assessment, and legal principle mapping using OpenAI GPT-4o
 - **Risk Analysis**: AI-powered assessment of contractual risks and obligations *(planned)*
 - **Plain-Language Summaries**: Convert complex legal language into accessible explanations *(planned)*
 - **Interactive Q&A**: Ask questions about contract terms and receive contextualized answers *(planned)*
@@ -300,106 +301,11 @@ Returns status and version information.
 }
 ```
 
-**Error Responses:**
-
-- **409 Conflict** - Duplicate clause ID detected (rare edge case)
-  ```json
-  {
-    "detail": "Duplicate clause ID '123e4567-e89b-12d3-a456-426614174000' already exists for contract 1"
-  }
-  ```
-
-- **500 Internal Server Error** - Processing failure (database error, unexpected exception)
-  ```json
-  {
-    "detail": "Failed to process contract: <error description>"
-  }
-  ```
-
-**Upstream Service Errors (OpenAI):**
-
-When entity extraction encounters OpenAI API issues, the endpoint returns `completed_with_warnings` (HTTP 200) with clauses but empty entities:
-
-- **Rate Limit (OpenAI 429)**:
-  ```json
-  {
-    "contract_id": 1,
-    "status": "completed_with_warnings",
-    "clauses": [...],
-    "entities": [],
-    "message": "Contract segmented into clauses, but entity extraction failed: Entity extraction failed: RateLimitError: You exceeded your current quota"
-  }
-  ```
-
-- **OpenAI API Timeout**:
-  ```json
-  {
-    "contract_id": 1,
-    "status": "completed_with_warnings",
-    "clauses": [...],
-    "entities": [],
-    "message": "Contract segmented into clauses, but entity extraction failed: Entity extraction failed: APITimeoutError: Request timed out."
-  }
-  ```
-
-- **OpenAI Service Error (5xx)**:
-  ```json
-  {
-    "contract_id": 1,
-    "status": "completed_with_warnings",
-    "clauses": [...],
-    "entities": [],
-    "message": "Contract segmented into clauses, but entity extraction failed: Entity extraction failed: APIError: The server had an error while processing your request"
-  }
-  ```
-
-**Database Connection Errors:**
-
-If the database is unavailable during initial contract creation, the endpoint returns HTTP 500:
-```json
-{
-  "detail": "Failed to process contract: (psycopg2.OperationalError) could not connect to server"
-}
-```
-
-**Client Guidance:**
-
-1. **Always check the `status` field** to determine processing outcome:
-   - `completed`: Use both clauses and entities
-   - `completed_with_warnings`: Use clauses; entities array will be empty; check `message` for reason
-   - `failed`: Processing failed entirely
-
-2. **Check array lengths**: Even with status `completed`, arrays may be empty if no clauses/entities were found
-
-3. **Retry Logic**:
-   - For OpenAI rate limits (429): Implement exponential backoff (wait 60s, 120s, 240s)
-   - For OpenAI timeouts: Retry immediately (timeout may be transient)
-   - For 500 errors: Retry with exponential backoff (5s, 10s, 20s)
-   - For 409 conflicts: Do not retry (indicates data integrity issue)
-
-4. **Timeouts**: Set client timeout to at least 60 seconds (entity extraction via OpenAI can take 10-30s for large contracts)
-
-**FastAPI Response Models:**
-
-The endpoint uses Pydantic models for validation:
-```python
-class ContractSegmentResponse(BaseModel):
-    contract_id: int
-    status: str  # "completed" | "completed_with_warnings" | "failed"
-    clauses: List[ClauseResponse]
-    entities: List[EntityResponse]
-    message: str
-```
-
-See `/docs` (Swagger UI) or `/redoc` (ReDoc) for interactive API documentation with live examples.
-
 **What this endpoint does:**
 - Persists the contract to the database
-- Segments the contract into numbered clauses using regex-based pattern matching (`segment_contract()` function)
+- Segments the contract into numbered clauses using regex-based pattern matching
 - Extracts entities using OpenAI GPT-4o (parties, dates, financial terms, governing laws, obligations)
 - Stores all data for future analysis and retrieval
-
-**Architecture Note:** Clause segmentation and entity extraction are intentionally separated. The `segment_contract()` function remains pure for regex-based clause splitting, while AI-powered entity extraction is orchestrated separately in the endpoint, enabling clear separation of concerns between structural parsing and semantic analysis.
 
 **Production-Readiness Considerations:**
 
@@ -449,10 +355,6 @@ See `/docs` (Swagger UI) or `/redoc` (ReDoc) for interactive API documentation w
      ```
    - If duplicate key is detected, return cached response with HTTP 200 (not 409) to maintain idempotency semantics
 
-**References:**
-- [OpenAI Python Client Timeouts](https://github.com/openai/openai-python#timeouts)
-- [Tenacity Retry Library](https://tenacity.readthedocs.io/)
-- [Idempotency Keys Pattern](https://stripe.com/docs/api/idempotent_requests)
 
 ### Entity Retrieval
 
@@ -512,27 +414,78 @@ If no entities exist for the contract or filter criteria:
   }
   ```
 
-**Client Guidance:**
 
-1. **Always check `total_count`**: A value of 0 means no entities were extracted (possibly due to extraction failure during upload or no entities present in text)
+### Jurisdiction Analysis
 
-2. **Empty `entities` array is valid**: Contracts may legitimately have no entities, or entity extraction may have failed during upload (check contract's `status` field via the upload response or database)
+**`POST /contracts/{id}/analyze-jurisdiction`** - Analyze contract through UK contract law lens
 
-3. **Case-insensitive filtering**: The `entity_type` parameter accepts any case variation ("Party", "PARTY", "party" all work)
+**Description:**
+Performs comprehensive jurisdiction analysis of a contract, identifying applicable UK statutes, legal principles, enforceability considerations, and providing clause-specific interpretations under UK law.
 
-4. **Retry Logic**:
-   - For 404 errors: Do not retry (contract doesn't exist)
-   - For 500 errors: Retry with exponential backoff (2s, 4s, 8s)
+**Path Parameters:**
+- `id` - Contract database ID (integer)
 
-**FastAPI Response Models:**
-
-```python
-class EntitiesListResponse(BaseModel):
-    contract_id: int
-    entities: List[EntityResponse]
-    total_count: int
-    entity_types: dict  # Type counts, e.g., {"party": 2, "date": 5}
+**Success Response (HTTP 200):**
+```json
+{
+  "contract_id": 1,
+  "jurisdiction_confirmed": "England and Wales",
+  "confidence": "high",
+  "applicable_statutes": [
+    "Consumer Rights Act 2015",
+    "Unfair Contract Terms Act 1977"
+  ],
+  "legal_principles": [
+    "Freedom of contract",
+    "Contra proferentem rule for ambiguous terms"
+  ],
+  "enforceability_assessment": "The contract appears generally enforceable under UK law, subject to the considerations noted below...",
+  "key_considerations": [
+    "Limitation of liability clause may be subject to reasonableness test under UCTA 1977",
+    "Termination clause provides adequate notice period under common law"
+  ],
+  "clause_interpretations": [
+    {
+      "clause": "Clause 5 - Limitation of Liability",
+      "interpretation": "Under UCTA 1977, this clause must satisfy the reasonableness test..."
+    }
+  ],
+  "recommendations": [
+    "Consider adding explicit force majeure clause (not implied in English law)",
+    "Ensure jurisdiction clause specifies exclusive or non-exclusive jurisdiction"
+  ],
+  "analyzed_at": "2025-10-28T10:00:00Z"
+}
 ```
+
+**Error Responses:**
+
+- **404 Not Found** - Contract does not exist
+  ```json
+  {
+    "detail": "Contract 999 not found"
+  }
+  ```
+
+- **500 Internal Server Error** - Analysis failed (OpenAI error, parsing error, etc.)
+  ```json
+  {
+    "detail": "Jurisdiction analysis failed: <error description>"
+  }
+  ```
+
+**What this endpoint does:**
+- Analyzes contract through UK contract law lens using OpenAI GPT-4o
+- Identifies applicable UK statutes (Consumer Rights Act, UCTA, etc.)
+- Maps relevant legal principles (freedom of contract, contra proferentem, etc.)
+- Assesses overall enforceability under UK law
+- Provides clause-specific interpretations with legal reasoning
+- Offers recommendations for UK law compliance
+- Stores analysis results in database for future reference
+- Updates contract's jurisdiction field with detected jurisdiction
+
+**Legal Disclaimer:**
+This analysis is for informational purposes only and does not constitute legal advice. Consult a qualified solicitor for actual legal guidance on contract matters.
 
 ## Example Usage
 
@@ -559,6 +512,11 @@ curl http://localhost:8000/contracts/1/entities
 
 # Get only financial terms
 curl http://localhost:8000/contracts/1/entities?entity_type=financial_term
+```
+
+### 4. Analyze jurisdiction (UK contract law)
+```bash
+curl -X POST http://localhost:8000/contracts/1/analyze-jurisdiction
 ```
 
 ## Entity Types
@@ -593,6 +551,7 @@ ai-legal-anayst/
 │   ├── main.py           # FastAPI application with endpoints
 │   │                     # - POST /contracts/segment: Process contracts with AI
 │   │                     # - GET /contracts/{id}/entities: Retrieve entities
+│   │                     # - POST /contracts/{id}/analyze-jurisdiction: UK law analysis
 │   │                     # - segment_contract() function for clause extraction
 │   ├── schemas.py        # Pydantic models for API requests/responses
 │   ├── config.py         # Configuration management with pydantic-settings
@@ -600,9 +559,13 @@ ai-legal-anayst/
 │   ├── models.py         # SQLAlchemy ORM models (6 tables)
 │   ├── crud.py           # CRUD operations for database entities
 │   ├── db_init.py        # Database initialization script
+│   ├── jurisdictions/    # Jurisdiction-specific legal configurations
+│   │   ├── __init__.py
+│   │   └── uk_config.py  # UK contract law principles and prompt templates
 │   └── services/         # Business logic and external service integrations
 │       ├── __init__.py
-│       └── entity_extractor.py  # OpenAI-powered entity extraction service
+│       ├── entity_extractor.py    # OpenAI-powered entity extraction service
+│       └── jurisdiction_analyzer.py  # OpenAI-powered UK law analysis
 ├── .env                  # Environment variables (DO NOT COMMIT)
 ├── .env.example          # Environment template
 ├── requirements.txt      # Python dependencies
@@ -619,6 +582,7 @@ ai-legal-anayst/
 - **OpenAI GPT-4o**: Large language model for AI-powered entity extraction and contract analysis
 - **Pydantic**: Data validation and settings management
 - **Structured JSON Output**: GPT-4o's JSON mode for reliable entity extraction
+- **UK Contract Law Analysis**: Jurisdiction-aware legal reasoning with statute identification and enforceability assessment
 
 ## Development Status
 
@@ -646,8 +610,22 @@ ai-legal-anayst/
   - `GET /contracts/{id}/entities` - Retrieve entities with type filtering
   - `GET /health` - Service health check
 
+### ✅ Completed Features (Phase 2)
+- **Jurisdiction-Aware Analysis (UK Contract Law)**
+  - OpenAI GPT-4o-powered legal analysis
+  - Automatic jurisdiction detection and confirmation
+  - Identification of applicable UK statutes (Consumer Rights Act, UCTA, etc.)
+  - Mapping of relevant legal principles
+  - Enforceability assessment under UK law
+  - Clause-specific interpretations with legal reasoning
+  - Recommendations for UK law compliance
+  - Database persistence of analysis results
+  - Caching to prevent redundant API calls
+
+- **API Endpoints**
+  - `POST /contracts/{id}/analyze-jurisdiction` - UK law analysis
+
 ### 📋 Planned Features (Future Phases)
-- **Phase 2**: Jurisdiction analysis and detection
 - **Phase 3**: Risk assessment and obligation tracking
 - **Phase 4**: Plain-language contract summaries
 - **Phase 5**: Semantic search with vector embeddings
@@ -686,6 +664,13 @@ ai-legal-anayst/
 - Reinstall dependencies: `pip install -r requirements.txt`
 - Check Python version: `python --version` (should be 3.11+)
 
+**Jurisdiction analysis fails or returns errors:**
+- Verify OpenAI API key has GPT-4o access
+- Check application logs for detailed error messages
+- Ensure contract text is substantial enough for analysis (> 100 characters)
+- Verify database connection for storing analysis results
+- Check OpenAI API usage limits and quotas
+
 ## Security Notes
 
 - **Never commit the `.env` file** - it contains sensitive API keys
@@ -693,11 +678,3 @@ ai-legal-anayst/
 - **Rotate your API keys immediately** if they are exposed or committed accidentally
 - The `.env` file is already included in `.gitignore` to prevent accidental commits
 - Review OpenAI's best practices for API key security: https://platform.openai.com/docs/guides/safety-best-practices
-
-## License
-
-[License information to be added]
-
-## Contributing
-
-[Contributing guidelines to be added]
