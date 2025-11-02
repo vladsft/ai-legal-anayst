@@ -92,6 +92,8 @@ def normalize_jurisdiction(jurisdiction: str) -> str:
     Examples:
         >>> normalize_jurisdiction('England and Wales')
         'UK_EW'
+        >>> normalize_jurisdiction('  England and Wales  ')
+        'UK_EW'
         >>> normalize_jurisdiction('Scotland')
         'UK_SC'
         >>> normalize_jurisdiction('New York')
@@ -102,18 +104,26 @@ def normalize_jurisdiction(jurisdiction: str) -> str:
         'UNKNOWN'
     """
     # Input validation - handle None, non-string, and empty values
-    if jurisdiction is None or not isinstance(jurisdiction, str) or jurisdiction.strip() == "":
+    if jurisdiction is None or not isinstance(jurisdiction, str):
         logger.warning(f"Invalid jurisdiction input: {repr(jurisdiction)}. Returning 'UNKNOWN'")
         return 'UNKNOWN'
 
-    # Try to find mapping (case-insensitive)
+    # Trim whitespace before validation and processing
+    jurisdiction = jurisdiction.strip()
+
+    # Check if empty after stripping
+    if not jurisdiction:
+        logger.warning(f"Empty jurisdiction input after stripping whitespace. Returning 'UNKNOWN'")
+        return 'UNKNOWN'
+
+    # Try to find mapping (case-insensitive with trimmed value)
     normalized = JURISDICTION_MAPPING.get(jurisdiction.lower())
 
     if normalized:
         logger.debug(f"Normalized jurisdiction '{jurisdiction}' to '{normalized}'")
         return normalized
 
-    # Return original if no mapping exists
+    # Return original trimmed value if no mapping exists
     logger.debug(f"No normalization mapping found for jurisdiction '{jurisdiction}', using original value")
     return jurisdiction
 
@@ -293,17 +303,19 @@ def analyze_jurisdiction(contract_text: str, contract_id: int) -> Tuple[Dict[str
         raw_jurisdiction = response_data['jurisdiction_confirmed']
         normalized_jurisdiction = normalize_jurisdiction(raw_jurisdiction)
 
+        # Coerce optional list fields to empty list if None (handles {"field": null} from API)
+        # Using 'or []' pattern: if value is None or missing, use empty list
         analysis_data = {
             'contract_id': contract_id,
             'jurisdiction_confirmed': raw_jurisdiction,  # Keep human-readable in analysis
             'jurisdiction_code': normalized_jurisdiction,  # Add normalized code
             'confidence': response_data['confidence'].lower(),
-            'applicable_statutes': response_data.get('applicable_statutes', []),
-            'legal_principles': response_data.get('legal_principles', []),
+            'applicable_statutes': response_data.get('applicable_statutes') or [],
+            'legal_principles': response_data.get('legal_principles') or [],
             'enforceability_assessment': response_data['enforceability_assessment'],
-            'key_considerations': response_data.get('key_considerations', []),
-            'clause_interpretations': response_data.get('clause_interpretations', []),
-            'recommendations': response_data.get('recommendations', [])
+            'key_considerations': response_data.get('key_considerations') or [],
+            'clause_interpretations': response_data.get('clause_interpretations') or [],
+            'recommendations': response_data.get('recommendations') or []
         }
 
         jurisdiction = analysis_data['jurisdiction_confirmed']
