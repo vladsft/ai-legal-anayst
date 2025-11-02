@@ -17,7 +17,7 @@ from typing import Optional, List, Dict, Any, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy import func
-from app.models import Contract, Clause, Entity, Summary
+from app.models import Contract, Clause, Entity, Summary, RiskAssessment
 import json
 
 
@@ -734,3 +734,285 @@ def get_jurisdiction_analysis(
             return summary, None
 
     return None, None
+
+
+# ============================================================================
+# Risk Assessment CRUD Operations
+# ============================================================================
+
+
+def create_risk_assessment(
+    db: Session,
+    contract_id: int,
+    risk_type: str,
+    risk_level: str,
+    description: str,
+    justification: str,
+    clause_id: Optional[int] = None,
+    recommendation: Optional[str] = None
+) -> RiskAssessment:
+    """
+    Create a risk assessment record from the risk analyzer service.
+
+    This creates a risk assessment record that can be clause-specific (with clause_id)
+    or contract-level (clause_id=None). Risk types and levels are normalized to
+    lowercase for consistent querying.
+
+    Args:
+        db: Database session
+        contract_id: Parent contract ID
+        risk_type: Risk category (termination_rights/indemnity/penalty/liability_cap/etc.)
+        risk_level: Severity level (low/medium/high)
+        description: Clear explanation of the risk
+        justification: Detailed reasoning for the risk level assessment
+        clause_id: Optional clause database ID if risk is clause-specific
+        recommendation: Optional specific actionable mitigation strategy
+
+    Returns:
+        RiskAssessment: Created risk assessment object with auto-generated ID and timestamp
+
+    Raises:
+        IntegrityError: For foreign key violations (invalid contract_id or clause_id)
+        SQLAlchemyError: On other database operation failures
+
+    Example:
+        >>> risk = create_risk_assessment(
+        ...     db, contract_id=1, risk_type='liability_cap', risk_level='high',
+        ...     description='Low liability cap', justification='Cap is only 2% of contract value',
+        ...     clause_id=5, recommendation='Negotiate to increase cap to 50%'
+        ... )
+    """
+    risk = RiskAssessment(
+        contract_id=contract_id,
+        clause_id=clause_id,
+        risk_type=risk_type.lower(),  # Normalize to lowercase for consistent querying
+        risk_level=risk_level.lower(),  # Normalize to lowercase for consistent querying
+        description=description,
+        justification=justification,
+        recommendation=recommendation
+    )
+    db.add(risk)
+    try:
+        db.commit()
+        db.refresh(risk)  # Refresh to get auto-generated ID and timestamp
+    except Exception as e:
+        db.rollback()
+        raise
+    return risk
+
+
+def bulk_create_risk_assessments(db: Session, risk_assessments: List[RiskAssessment]) -> None:
+    """
+    Efficiently insert multiple risk assessments from analysis results.
+
+    This optimizes insertion of multiple risk assessments from the risk analyzer,
+    reducing database round-trips. Uses add_all() to populate auto-generated IDs
+    and timestamps. The entire transaction is rolled back on failure.
+
+    Args:
+        db: Database session
+        risk_assessments: List of RiskAssessment objects to insert
+
+    Raises:
+        IntegrityError: For constraint violations (e.g., foreign key)
+        SQLAlchemyError: On other database operation failures
+
+    Example:
+        >>> risks = [
+        ...     RiskAssessment(contract_id=1, risk_type='penalty', risk_level='medium', ...),
+        ...     RiskAssessment(contract_id=1, risk_type='indemnity', risk_level='high', ...)
+        ... ]
+        >>> bulk_create_risk_assessments(db, risks)
+    """
+    try:
+        db.add_all(risk_assessments)
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        raise
+
+
+def get_risk_assessments_by_contract(
+    db: Session,
+    contract_id: int,
+    risk_level: Optional[str] = None
+) -> List[RiskAssessment]:
+    """
+    Retrieve all risk assessments for a contract with optional filtering by risk level.
+
+    Returns high-risk items first, then medium, then low. Most recent assessments
+    first within each risk level. This ensures critical risks appear first.
+
+    Args:
+        db: Database session
+        contract_id: Parent contract ID
+        risk_level: Optional filter by risk level (low/medium/high)
+
+    Returns:
+        List of risk assessment objects ordered by severity and recency
+
+    Example:
+        >>> # Get all risks for a contract
+        >>> all_risks = get_risk_assessments_by_contract(db, contract_id=1)
+        >>> # Get only high-risk items
+        >>> high_risks = get_risk_assessments_by_contract(db, contract_id=1, risk_level='high')
+    """
+    query = db.query(RiskAssessment).filter(RiskAssessment.contract_id == contract_id)
+
+    if risk_level:
+        query = query.filter(RiskAssessment.risk_level == risk_level.lower())
+
+    # Order by risk level using CASE expression to map severity to numeric order
+    # (high=3, medium=2, low=1), then by assessed_at descending
+    from sqlalchemy import case
+    severity_order = case(
+        (RiskAssessment.risk_level == 'high', 3),
+        (RiskAssessment.risk_level == 'medium', 2),
+        (RiskAssessment.risk_level == 'low', 1),
+        else_=0
+    )
+    return query.order_by(
+        severity_order.desc(),
+        RiskAssessment.assessed_at.desc()
+    ).all()
+
+
+def get_risk_assessments_by_clause(db: Session, clause_id: int) -> List[RiskAssessment]:
+    """
+    Retrieve all risk assessments for a specific clause.
+
+    This is useful for clause-level risk analysis, showing all risks identified
+    in a particular clause. Returns high-risk items first.
+
+    Args:
+        db: Database session
+        clause_id: Clause database ID
+
+    Returns:
+        List of risk assessment objects ordered by severity (high first)
+
+    Example:
+        >>> # Get all risks for a specific clause
+        >>> clause_risks = get_risk_assessments_by_clause(db, clause_id=5)
+    """
+    from sqlalchemy import case
+    severity_order = case(
+        (RiskAssessment.risk_level == 'high', 3),
+        (RiskAssessment.risk_level == 'medium', 2),
+        (RiskAssessment.risk_level == 'low', 1),
+        else_=0
+    )
+    return db.query(RiskAssessment).filter(
+        RiskAssessment.clause_id == clause_id
+    ).order_by(severity_order.desc()).all()
+
+
+def count_risks_by_level(db: Session, contract_id: int) -> dict:
+    """
+    Count risks by severity level for a contract.
+
+    This provides statistics for the risk analysis response, showing distribution
+    of risks across severity levels. Used in RiskAnalysisResponse.risk_summary field.
+
+    Args:
+        db: Database session
+        contract_id: Parent contract ID
+
+    Returns:
+        Dictionary mapping risk levels to counts (e.g., {'high': 2, 'medium': 5, 'low': 3})
+
+    Example:
+        >>> summary = count_risks_by_level(db, contract_id=1)
+        >>> print(f"Found {summary.get('high', 0)} high-risk items")
+    """
+    results = db.query(
+        RiskAssessment.risk_level,
+        func.count(RiskAssessment.id)
+    ).filter(
+        RiskAssessment.contract_id == contract_id
+    ).group_by(
+        RiskAssessment.risk_level
+    ).all()
+
+    # Convert list of tuples to dictionary
+    return {risk_level: count for risk_level, count in results}
+
+
+def count_risks_by_type(db: Session, contract_id: int) -> dict:
+    """
+    Count risks by category for a contract.
+
+    This provides a breakdown by risk category, showing which types of risks
+    are most prevalent in the contract.
+
+    Args:
+        db: Database session
+        contract_id: Parent contract ID
+
+    Returns:
+        Dictionary mapping risk types to counts (e.g., {'liability_cap': 2, 'termination_rights': 1})
+
+    Example:
+        >>> type_breakdown = count_risks_by_type(db, contract_id=1)
+        >>> print(f"Found {type_breakdown.get('indemnity', 0)} indemnity risks")
+    """
+    results = db.query(
+        RiskAssessment.risk_type,
+        func.count(RiskAssessment.id)
+    ).filter(
+        RiskAssessment.contract_id == contract_id
+    ).group_by(
+        RiskAssessment.risk_type
+    ).all()
+
+    # Convert list of tuples to dictionary
+    return {risk_type: count for risk_type, count in results}
+
+
+def delete_risk_assessments_by_contract(db: Session, contract_id: int) -> int:
+    """
+    Delete all risk assessments for a contract.
+
+    This is useful for clearing old analyses before re-analyzing, or for
+    implementing a "re-analyze" feature that clears previous results.
+
+    Args:
+        db: Database session
+        contract_id: Parent contract ID
+
+    Returns:
+        int: Number of risk assessments deleted
+
+    Example:
+        >>> # Clear all risk assessments for a contract
+        >>> deleted = delete_risk_assessments_by_contract(db, contract_id=1)
+        >>> print(f"Deleted {deleted} risk assessments")
+    """
+    deleted_count = db.query(RiskAssessment).filter(
+        RiskAssessment.contract_id == contract_id
+    ).delete()
+    db.commit()
+    return deleted_count
+
+
+def get_high_risk_assessments(db: Session, contract_id: int) -> List[RiskAssessment]:
+    """
+    Convenience function to get only high-risk items for a contract.
+
+    This provides quick access to critical risks without filtering manually.
+    Equivalent to calling get_risk_assessments_by_contract with risk_level='high'.
+
+    Args:
+        db: Database session
+        contract_id: Parent contract ID
+
+    Returns:
+        List of high-risk assessment objects
+
+    Example:
+        >>> # Get only critical risks
+        >>> critical_risks = get_high_risk_assessments(db, contract_id=1)
+        >>> for risk in critical_risks:
+        ...     print(f"HIGH RISK: {risk.description}")
+    """
+    return get_risk_assessments_by_contract(db, contract_id, risk_level='high')

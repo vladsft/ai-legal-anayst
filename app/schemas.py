@@ -155,3 +155,114 @@ class JurisdictionSummaryResponse(BaseModel):
     confidence: str = Field(..., description="Detection confidence level: 'high', 'medium', or 'low'")
     enforceability: str = Field(..., description="Brief enforceability summary (first 200 characters)")
     analyzed_at: datetime = Field(..., description="Timestamp when the analysis was performed")
+
+
+class RiskAssessmentResponse(BaseModel):
+    """
+    Response schema representing a single risk assessment.
+
+    This represents one identified risk in a contract, including its category,
+    severity level, detailed analysis, and actionable recommendations.
+    Can be clause-specific (with clause_id) or contract-level (clause_id=None).
+    """
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int = Field(..., description="Database primary key")
+    contract_id: int = Field(..., description="Contract database ID")
+    clause_id: Optional[int] = Field(None, description="Clause database ID if risk is clause-specific, None for contract-level risks")
+    risk_type: str = Field(..., description="Risk category (termination_rights/indemnity/penalty/liability_cap/payment_terms/intellectual_property/confidentiality/warranty/force_majeure/dispute_resolution)")
+    risk_level: str = Field(..., description="Severity level: 'low', 'medium', or 'high'")
+    description: str = Field(..., description="Clear 2-3 sentence explanation of the risk")
+    justification: str = Field(..., description="Detailed 3-5 sentence reasoning for the risk level assessment")
+    recommendation: Optional[str] = Field(None, description="Specific actionable mitigation strategy")
+    assessed_at: datetime = Field(..., description="Timestamp when the assessment was performed")
+
+    @field_validator('risk_level')
+    @classmethod
+    def validate_risk_level(cls, v: str) -> str:
+        """Validate that risk_level is one of 'low', 'medium', or 'high' and normalize to lowercase."""
+        if not v:
+            raise ValueError('Risk level must not be empty')
+        normalized = v.lower()
+        valid_values = ['low', 'medium', 'high']
+        if normalized not in valid_values:
+            raise ValueError(f"Risk level must be one of {valid_values}, got '{v}'")
+        return normalized
+
+    @field_validator('risk_type')
+    @classmethod
+    def validate_risk_type(cls, v: str) -> str:
+        """Validate that risk_type is one of the defined risk types and normalize to lowercase."""
+        if not v:
+            raise ValueError('Risk type must not be empty')
+        normalized = v.lower()
+        valid_types = [
+            'termination_rights', 'indemnity', 'penalty', 'liability_cap',
+            'payment_terms', 'intellectual_property', 'confidentiality',
+            'warranty', 'force_majeure', 'dispute_resolution'
+        ]
+        if normalized not in valid_types:
+            raise ValueError(f"Risk type must be one of {valid_types}, got '{v}'")
+        return normalized
+
+
+class RiskAnalysisResponse(BaseModel):
+    """
+    Response schema for the POST /contracts/{id}/analyze-risks endpoint.
+
+    This is the main response returned after performing comprehensive risk analysis.
+    It includes all identified risks, total risk count, and a summary breakdown
+    showing the distribution of risks across severity levels.
+
+    The risk_summary field provides a quick overview (e.g., {'high': 2, 'medium': 5, 'low': 3})
+    without needing to iterate through all risks.
+
+    DISCLAIMER: This analysis is for informational purposes only and does NOT
+    constitute legal advice. Consult qualified legal professionals for actual
+    legal guidance on contract risks and mitigation strategies.
+    """
+    contract_id: int = Field(..., description="Contract database ID")
+    risks: List[RiskAssessmentResponse] = Field(default_factory=list, description="List of identified risks")
+    total_risks: int = Field(..., description="Total number of risks found")
+    risk_summary: dict = Field(default_factory=dict, description="Breakdown by severity level (e.g., {'high': 2, 'medium': 5, 'low': 3})")
+    analyzed_at: datetime = Field(..., description="Timestamp when the analysis was performed")
+
+
+class RiskFilterParams(BaseModel):
+    """
+    Optional filter parameters for querying risk assessments.
+
+    This schema enables filtering risks in GET endpoints by severity level,
+    risk type, or specific clause. All fields are optional.
+    """
+    risk_level: Optional[str] = Field(None, description="Filter by risk level: 'low', 'medium', or 'high'")
+    risk_type: Optional[str] = Field(None, description="Filter by risk type (e.g., 'termination_rights', 'indemnity')")
+    clause_id: Optional[int] = Field(None, description="Filter by specific clause database ID")
+
+    @field_validator('risk_level')
+    @classmethod
+    def validate_risk_level(cls, v: Optional[str]) -> Optional[str]:
+        """Validate and normalize risk_level if provided."""
+        if v is None:
+            return v
+        normalized = v.lower()
+        valid_values = ['low', 'medium', 'high']
+        if normalized not in valid_values:
+            raise ValueError(f"Risk level must be one of {valid_values}, got '{v}'")
+        return normalized
+
+    @field_validator('risk_type')
+    @classmethod
+    def validate_risk_type(cls, v: Optional[str]) -> Optional[str]:
+        """Validate and normalize risk_type if provided."""
+        if v is None:
+            return v
+        normalized = v.lower()
+        valid_types = [
+            'termination_rights', 'indemnity', 'penalty', 'liability_cap',
+            'payment_terms', 'intellectual_property', 'confidentiality',
+            'warranty', 'force_majeure', 'dispute_resolution'
+        ]
+        if normalized not in valid_types:
+            raise ValueError(f"Risk type must be one of {valid_types}, got '{v}'")
+        return normalized
