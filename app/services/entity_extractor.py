@@ -27,8 +27,7 @@ Error handling:
 - Logs all errors for debugging and monitoring
 """
 
-from openai import OpenAI
-from app.config import get_settings
+from app.services.openai_client import get_openai_client
 from typing import List, Dict, Any, Optional
 import json
 import logging
@@ -36,45 +35,6 @@ import logging
 # Module-level setup
 logger = logging.getLogger(__name__)
 MODEL_NAME = "gpt-4o"
-
-# Cache the OpenAI client to avoid recreating it on every call
-_client_cache = None
-
-
-def _get_client() -> OpenAI:
-    """
-    Get or create cached OpenAI client.
-
-    This lazy initialization prevents import-time failures when environment
-    configuration is missing. The client is cached after first creation to
-    avoid repeated instantiation overhead.
-
-    Returns:
-        OpenAI: Configured OpenAI client instance
-
-    Raises:
-        ValueError: If OPENAI_API_KEY is not configured
-    """
-    global _client_cache
-
-    if _client_cache is None:
-        try:
-            settings = get_settings()
-            if not settings.openai_api_key:
-                raise ValueError(
-                    "OPENAI_API_KEY is not configured. Please set the OPENAI_API_KEY "
-                    "environment variable to use entity extraction."
-                )
-            _client_cache = OpenAI(api_key=settings.openai_api_key)
-            logger.info("OpenAI client initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize OpenAI client: {e}")
-            raise ValueError(
-                f"Failed to initialize OpenAI client: {e}. "
-                "Ensure OPENAI_API_KEY is set in your environment."
-            ) from e
-
-    return _client_cache
 
 # Entity type definitions
 ENTITY_TYPES = ['party', 'date', 'financial_term', 'governing_law', 'obligation']
@@ -194,7 +154,7 @@ def extract_entities(contract_text: str) -> tuple[List[Dict[str, Any]], Optional
         logger.info(f"Starting entity extraction for contract (length: {len(contract_text)} chars)")
 
         # Get or create OpenAI client (lazy initialization)
-        client = _get_client()
+        client = get_openai_client()
 
         # Build user prompt
         user_prompt = f"""Extract all entities from the following contract text:
@@ -276,36 +236,3 @@ Remember to return a JSON object with an "entities" array containing all extract
         error_msg = f"Entity extraction failed: {type(e).__name__}: {e}"
         logger.error(error_msg)
         return [], error_msg
-
-
-def prepare_entities_for_db(entities: List[Dict[str, Any]], contract_id: int) -> List[Dict[str, Any]]:
-    """
-    Prepare extracted entities for database insertion.
-
-    Adds the contract_id field to each entity dictionary and ensures all
-    required fields are present for CRUD operations.
-
-    Args:
-        entities: List of entity dictionaries from extract_entities()
-        contract_id: Database ID of the contract these entities belong to
-
-    Returns:
-        List of entity dictionaries ready for insertion via app/crud.py
-
-    Example:
-        >>> entities = extract_entities(contract_text)
-        >>> db_ready = prepare_entities_for_db(entities, contract_id=42)
-        >>> # Now ready for crud.bulk_create_entities()
-    """
-    db_entities = []
-    for entity in entities:
-        db_entity = {
-            "contract_id": contract_id,
-            "entity_type": entity["entity_type"],
-            "value": entity["value"],
-            "context": entity.get("context"),
-            "confidence": entity.get("confidence", "medium")
-        }
-        db_entities.append(db_entity)
-
-    return db_entities

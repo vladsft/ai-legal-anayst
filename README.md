@@ -301,106 +301,11 @@ Returns status and version information.
 }
 ```
 
-**Error Responses:**
-
-- **409 Conflict** - Duplicate clause ID detected (rare edge case)
-  ```json
-  {
-    "detail": "Duplicate clause ID '123e4567-e89b-12d3-a456-426614174000' already exists for contract 1"
-  }
-  ```
-
-- **500 Internal Server Error** - Processing failure (database error, unexpected exception)
-  ```json
-  {
-    "detail": "Failed to process contract: <error description>"
-  }
-  ```
-
-**Upstream Service Errors (OpenAI):**
-
-When entity extraction encounters OpenAI API issues, the endpoint returns `completed_with_warnings` (HTTP 200) with clauses but empty entities:
-
-- **Rate Limit (OpenAI 429)**:
-  ```json
-  {
-    "contract_id": 1,
-    "status": "completed_with_warnings",
-    "clauses": [...],
-    "entities": [],
-    "message": "Contract segmented into clauses, but entity extraction failed: Entity extraction failed: RateLimitError: You exceeded your current quota"
-  }
-  ```
-
-- **OpenAI API Timeout**:
-  ```json
-  {
-    "contract_id": 1,
-    "status": "completed_with_warnings",
-    "clauses": [...],
-    "entities": [],
-    "message": "Contract segmented into clauses, but entity extraction failed: Entity extraction failed: APITimeoutError: Request timed out."
-  }
-  ```
-
-- **OpenAI Service Error (5xx)**:
-  ```json
-  {
-    "contract_id": 1,
-    "status": "completed_with_warnings",
-    "clauses": [...],
-    "entities": [],
-    "message": "Contract segmented into clauses, but entity extraction failed: Entity extraction failed: APIError: The server had an error while processing your request"
-  }
-  ```
-
-**Database Connection Errors:**
-
-If the database is unavailable during initial contract creation, the endpoint returns HTTP 500:
-```json
-{
-  "detail": "Failed to process contract: (psycopg2.OperationalError) could not connect to server"
-}
-```
-
-**Client Guidance:**
-
-1. **Always check the `status` field** to determine processing outcome:
-   - `completed`: Use both clauses and entities
-   - `completed_with_warnings`: Use clauses; entities array will be empty; check `message` for reason
-   - `failed`: Processing failed entirely
-
-2. **Check array lengths**: Even with status `completed`, arrays may be empty if no clauses/entities were found
-
-3. **Retry Logic**:
-   - For OpenAI rate limits (429): Implement exponential backoff (wait 60s, 120s, 240s)
-   - For OpenAI timeouts: Retry immediately (timeout may be transient)
-   - For 500 errors: Retry with exponential backoff (5s, 10s, 20s)
-   - For 409 conflicts: Do not retry (indicates data integrity issue)
-
-4. **Timeouts**: Set client timeout to at least 60 seconds (entity extraction via OpenAI can take 10-30s for large contracts)
-
-**FastAPI Response Models:**
-
-The endpoint uses Pydantic models for validation:
-```python
-class ContractSegmentResponse(BaseModel):
-    contract_id: int
-    status: str  # "completed" | "completed_with_warnings" | "failed"
-    clauses: List[ClauseResponse]
-    entities: List[EntityResponse]
-    message: str
-```
-
-See `/docs` (Swagger UI) or `/redoc` (ReDoc) for interactive API documentation with live examples.
-
 **What this endpoint does:**
 - Persists the contract to the database
-- Segments the contract into numbered clauses using regex-based pattern matching (`segment_contract()` function)
+- Segments the contract into numbered clauses using regex-based pattern matching
 - Extracts entities using OpenAI GPT-4o (parties, dates, financial terms, governing laws, obligations)
 - Stores all data for future analysis and retrieval
-
-**Architecture Note:** Clause segmentation and entity extraction are intentionally separated. The `segment_contract()` function remains pure for regex-based clause splitting, while AI-powered entity extraction is orchestrated separately in the endpoint, enabling clear separation of concerns between structural parsing and semantic analysis.
 
 **Production-Readiness Considerations:**
 
@@ -450,10 +355,6 @@ See `/docs` (Swagger UI) or `/redoc` (ReDoc) for interactive API documentation w
      ```
    - If duplicate key is detected, return cached response with HTTP 200 (not 409) to maintain idempotency semantics
 
-**References:**
-- [OpenAI Python Client Timeouts](https://github.com/openai/openai-python#timeouts)
-- [Tenacity Retry Library](https://tenacity.readthedocs.io/)
-- [Idempotency Keys Pattern](https://stripe.com/docs/api/idempotent_requests)
 
 ### Entity Retrieval
 
@@ -513,27 +414,6 @@ If no entities exist for the contract or filter criteria:
   }
   ```
 
-**Client Guidance:**
-
-1. **Always check `total_count`**: A value of 0 means no entities were extracted (possibly due to extraction failure during upload or no entities present in text)
-
-2. **Empty `entities` array is valid**: Contracts may legitimately have no entities, or entity extraction may have failed during upload (check contract's `status` field via the upload response or database)
-
-3. **Case-insensitive filtering**: The `entity_type` parameter accepts any case variation ("Party", "PARTY", "party" all work)
-
-4. **Retry Logic**:
-   - For 404 errors: Do not retry (contract doesn't exist)
-   - For 500 errors: Retry with exponential backoff (2s, 4s, 8s)
-
-**FastAPI Response Models:**
-
-```python
-class EntitiesListResponse(BaseModel):
-    contract_id: int
-    entities: List[EntityResponse]
-    total_count: int
-    entity_types: dict  # Type counts, e.g., {"party": 2, "date": 5}
-```
 
 ### Jurisdiction Analysis
 
@@ -593,19 +473,6 @@ Performs comprehensive jurisdiction analysis of a contract, identifying applicab
     "detail": "Jurisdiction analysis failed: <error description>"
   }
   ```
-
-**Client Guidance:**
-
-1. **Caching**: The endpoint caches analysis results. Subsequent requests for the same contract return cached data without calling OpenAI API again.
-
-2. **Jurisdiction Field**: After successful analysis, the contract's `jurisdiction` field is automatically updated with the detected jurisdiction.
-
-3. **Retry Logic**:
-   - For 404 errors: Do not retry (contract doesn't exist)
-   - For 500 errors: Retry with exponential backoff (5s, 10s, 20s)
-   - For OpenAI rate limits: Wait and retry (60s, 120s)
-
-4. **Timeouts**: Set client timeout to at least 60 seconds (UK law analysis can take 15-45 seconds for complex contracts)
 
 **What this endpoint does:**
 - Analyzes contract through UK contract law lens using OpenAI GPT-4o
@@ -811,28 +678,3 @@ ai-legal-anayst/
 - **Rotate your API keys immediately** if they are exposed or committed accidentally
 - The `.env` file is already included in `.gitignore` to prevent accidental commits
 - Review OpenAI's best practices for API key security: https://platform.openai.com/docs/guides/safety-best-practices
-
-## Legal Disclaimer
-
-**IMPORTANT**: This application provides AI-powered contract analysis for informational and educational purposes only. The jurisdiction analysis, legal interpretations, and recommendations generated by this system:
-
-- **Do NOT constitute legal advice**
-- **Should NOT be relied upon** for legal decision-making
-- **Are NOT a substitute** for consultation with qualified legal professionals
-- **May contain errors or omissions** despite best efforts at accuracy
-
-UK contract law is complex and fact-specific. Always consult a qualified solicitor or barrister for:
-- Legal advice on specific contracts
-- Assessment of legal rights and obligations
-- Guidance on contract negotiation or disputes
-- Compliance with applicable laws and regulations
-
-The developers and operators of this system accept no liability for any decisions made based on the analysis provided by this application.
-
-## License
-
-[License information to be added]
-
-## Contributing
-
-[Contributing guidelines to be added]

@@ -45,8 +45,7 @@ This analysis is for informational purposes only and does NOT constitute legal a
 Always consult qualified legal professionals for actual legal guidance on contract matters.
 """
 
-from openai import OpenAI
-from app.config import get_settings
+from app.services.openai_client import get_openai_client
 from app.jurisdictions.uk_config import get_system_prompt, get_user_prompt
 from typing import List, Dict, Any, Optional, Tuple
 import json
@@ -61,9 +60,6 @@ MODEL_NAME = "gpt-4o"
 # Assuming ~4 chars per token as rough estimate
 MAX_CONTRACT_CHARS = 200000  # ~50k tokens, leaving room for prompts and response
 TRUNCATE_TO_CHARS = 150000   # ~37.5k tokens if we need to truncate
-
-# Cache the OpenAI client to avoid recreating it on every call
-_client_cache = None
 
 # Jurisdiction normalization mapping to canonical codes
 # Maps human-readable jurisdiction values to standardized codes
@@ -110,42 +106,6 @@ def normalize_jurisdiction(jurisdiction: str) -> str:
     # Return original if no mapping exists
     logger.debug(f"No normalization mapping found for jurisdiction '{jurisdiction}', using original value")
     return jurisdiction
-
-
-def _get_client() -> OpenAI:
-    """
-    Get or create cached OpenAI client.
-
-    This lazy initialization prevents import-time failures when environment
-    configuration is missing. The client is cached after first creation to
-    avoid repeated instantiation overhead.
-
-    Returns:
-        OpenAI: Configured OpenAI client instance
-
-    Raises:
-        ValueError: If OPENAI_API_KEY is not configured
-    """
-    global _client_cache
-
-    if _client_cache is None:
-        try:
-            settings = get_settings()
-            if not settings.openai_api_key:
-                raise ValueError(
-                    "OPENAI_API_KEY is not configured. Please set the OPENAI_API_KEY "
-                    "environment variable to use jurisdiction analysis."
-                )
-            _client_cache = OpenAI(api_key=settings.openai_api_key)
-            logger.info("OpenAI client initialized successfully for jurisdiction analysis")
-        except Exception as e:
-            logger.error(f"Failed to initialize OpenAI client: {e}")
-            raise ValueError(
-                f"Failed to initialize OpenAI client: {e}. "
-                "Ensure OPENAI_API_KEY is set in your environment."
-            ) from e
-
-    return _client_cache
 
 
 def _validate_analysis_response(response: Dict[str, Any]) -> bool:
@@ -285,7 +245,7 @@ def analyze_jurisdiction(contract_text: str, contract_id: int) -> Tuple[Dict[str
         )
 
         # Get or create OpenAI client (lazy initialization)
-        client = _get_client()
+        client = get_openai_client()
 
         # Build prompts from UK config
         system_prompt = get_system_prompt()
@@ -358,36 +318,3 @@ def analyze_jurisdiction(contract_text: str, contract_id: int) -> Tuple[Dict[str
         error_msg = f"Jurisdiction analysis failed: {type(e).__name__}: {e}"
         logger.error(error_msg, exc_info=True)
         return {}, error_msg
-
-
-def prepare_analysis_for_summary(analysis: Dict[str, Any], contract_id: int) -> Dict[str, Any]:
-    """
-    Prepare jurisdiction analysis for storage in Summary table.
-
-    This function converts the analysis dictionary into a format suitable for
-    insertion into the Summary table via app/crud.py. The analysis is serialized
-    to JSON and stored with summary_type='jurisdiction_analysis'.
-
-    Args:
-        analysis: Analysis dictionary returned from analyze_jurisdiction()
-        contract_id: Database ID of the contract
-
-    Returns:
-        Dictionary ready for CRUD operations with fields:
-        - contract_id: The contract ID
-        - summary_type: 'jurisdiction_analysis'
-        - role: None (not applicable for jurisdiction analysis)
-        - content: JSON string of the full analysis dict
-
-    Example:
-        >>> analysis, error = analyze_jurisdiction(contract_text, contract_id=1)
-        >>> if not error:
-        ...     summary_data = prepare_analysis_for_summary(analysis, contract_id=1)
-        ...     # Now ready for crud.create_summary()
-    """
-    return {
-        'contract_id': contract_id,
-        'summary_type': 'jurisdiction_analysis',
-        'role': None,
-        'content': json.dumps(analysis, indent=2)
-    }
