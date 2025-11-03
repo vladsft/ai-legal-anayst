@@ -865,7 +865,8 @@ def get_risk_assessments_by_contract(
     query = db.query(RiskAssessment).filter(RiskAssessment.contract_id == contract_id)
 
     if risk_level:
-        query = query.filter(RiskAssessment.risk_level == risk_level.lower())
+        normalized_risk_level = risk_level.strip().lower()
+        query = query.filter(RiskAssessment.risk_level == normalized_risk_level)
 
     # Order by risk level using CASE expression to map severity to numeric order
     # (high=3, medium=2, low=1), then by assessed_at descending
