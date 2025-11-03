@@ -297,10 +297,8 @@ def analyze_risks(
         logger.info(f"Starting risk analysis for contract {contract_id} ({original_length} chars, {len(clauses)} clauses)")
 
         # Truncate contract text if it exceeds maximum length to prevent token overflow
-        truncated = False
         if original_length > MAX_CONTRACT_TEXT_LENGTH:
             contract_text = contract_text[:MAX_CONTRACT_TEXT_LENGTH]
-            truncated = True
             logger.warning(f"Contract text truncated from {original_length} to {MAX_CONTRACT_TEXT_LENGTH} chars for token optimization")
 
         # Build clause structure metadata (numbers and titles only) for better clause reference accuracy

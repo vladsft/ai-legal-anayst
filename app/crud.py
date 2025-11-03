@@ -412,7 +412,7 @@ def bulk_create_entities(db: Session, entities: List[Entity]) -> None:
     try:
         db.add_all(entities)
         db.commit()
-    except IntegrityError as e:
+    except IntegrityError:
         db.rollback()
         raise
 
@@ -546,7 +546,7 @@ def create_summary(
     try:
         db.commit()
         db.refresh(summary)
-    except Exception as e:
+    except Exception:
         db.rollback()
         raise
     return summary
@@ -800,7 +800,7 @@ def create_risk_assessment(
     try:
         db.commit()
         db.refresh(risk)  # Refresh to get auto-generated ID and timestamp
-    except Exception as e:
+    except Exception:
         db.rollback()
         raise
     return risk
@@ -832,7 +832,7 @@ def bulk_create_risk_assessments(db: Session, risk_assessments: List[RiskAssessm
     try:
         db.add_all(risk_assessments)
         db.commit()
-    except IntegrityError as e:
+    except IntegrityError:
         db.rollback()
         raise
 
