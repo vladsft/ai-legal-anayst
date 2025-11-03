@@ -56,7 +56,7 @@ def get_openai_client() -> OpenAI:
         >>> from app.services.openai_client import get_openai_client
         >>> client = get_openai_client()
         >>> completion = client.chat.completions.create(
-        ...     model="gpt-4o",
+        ...     model="gpt-4o-mini",
         ...     messages=[{"role": "user", "content": "Hello"}]
         ... )
     """

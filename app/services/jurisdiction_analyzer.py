@@ -53,7 +53,7 @@ import logging
 
 # Module-level setup
 logger = logging.getLogger(__name__)
-MODEL_NAME = "gpt-4o"
+MODEL_NAME = "gpt-4o-mini"
 
 # Token limit safety thresholds
 # GPT-4o has 128k context window, but we want to be conservative

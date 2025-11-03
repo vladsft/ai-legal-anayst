@@ -18,16 +18,19 @@ from app.schemas import (
     ClauseResponse,
     EntityResponse,
     EntitiesListResponse,
-    JurisdictionAnalysisResponse
+    JurisdictionAnalysisResponse,
+    RiskAnalysisResponse,
+    RiskAssessmentResponse
 )
 
 # Service imports
 from app.services.entity_extractor import extract_entities
 from app.services.jurisdiction_analyzer import analyze_jurisdiction
+from app.services.risk_analyzer import analyze_risks
 
 # CRUD and model imports
 from app import crud
-from app.models import Entity, Clause as ClauseModel
+from app.models import Entity, Clause as ClauseModel, RiskAssessment
 
 # Logging setup
 logger = logging.getLogger(__name__)
@@ -503,5 +506,188 @@ def analyze_contract_jurisdiction(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to analyze jurisdiction"
+        )
+
+
+@app.post("/contracts/{contract_id}/analyze-risks", response_model=RiskAnalysisResponse)
+def analyze_contract_risks(
+    contract_id: int,
+    db: Session = Depends(get_db)
+) -> RiskAnalysisResponse:
+    """
+    Analyze contract for risky, unfair, or unusual clauses.
+
+    This endpoint performs comprehensive risk assessment including:
+    - Detection of 10 risk categories: termination rights, indemnities, penalties,
+      liability caps, payment terms, intellectual property, confidentiality,
+      warranties, force majeure, and dispute resolution
+    - Risk level assignment (low/medium/high) with detailed justifications
+    - Clause-specific risk linking for easy reference
+    - Actionable recommendations for risk mitigation
+
+    The analysis is performed using OpenAI GPT-4o with contract risk expertise.
+    Results are cached in the database - subsequent requests return cached data
+    without calling the OpenAI API again.
+
+    Args:
+        contract_id: Contract database ID
+        db: Database session (injected)
+
+    Returns:
+        RiskAnalysisResponse with all identified risks, risk summary, and analysis timestamp
+
+    Raises:
+        HTTPException: 404 if contract not found, 500 if analysis fails
+
+    DISCLAIMER:
+        This analysis is for informational purposes only and does NOT constitute
+        legal advice. Risk assessments are based on AI analysis and should be
+        validated by qualified legal professionals.
+    """
+    try:
+        logger.info(f"Starting risk analysis for contract {contract_id}")
+
+        # 1. Validate contract exists
+        contract = crud.get_contract(db, contract_id)
+        if not contract:
+            logger.warning(f"Contract {contract_id} not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Contract {contract_id} not found"
+            )
+
+        # 2. Check for existing cached analysis
+        existing_risks = crud.get_risk_assessments_by_contract(db, contract_id)
+
+        if existing_risks:
+            # Return cached analysis
+            logger.info(f"Returning cached risk analysis for contract {contract_id} ({len(existing_risks)} risks)")
+
+            # Convert to response models
+            risk_responses = [
+                RiskAssessmentResponse.model_validate(risk)
+                for risk in existing_risks
+            ]
+
+            # Get risk summary and normalize to include all levels with default 0
+            risk_summary = crud.count_risks_by_level(db, contract_id)
+            risk_summary = {
+                'high': risk_summary.get('high', 0),
+                'medium': risk_summary.get('medium', 0),
+                'low': risk_summary.get('low', 0)
+            }
+
+            # Get most recent assessed_at timestamp
+            analyzed_at = max(risk.assessed_at for risk in existing_risks)
+
+            return RiskAnalysisResponse(
+                contract_id=contract_id,
+                risks=risk_responses,
+                total_risks=len(risk_responses),
+                risk_summary=risk_summary,
+                analyzed_at=analyzed_at
+            )
+
+        # 3. Retrieve clauses for context
+        clauses = crud.get_clauses_by_contract(db, contract_id)
+
+        # Convert clause ORM objects to dictionaries for the risk analyzer
+        clause_dicts = [
+            {
+                "id": clause.id,
+                "clause_id": clause.clause_id,
+                "number": clause.number,
+                "title": clause.title,
+                "text": clause.text
+            }
+            for clause in clauses
+        ]
+
+        # 4. Perform risk analysis using OpenAI
+        logger.info(f"No cached analysis found, performing new risk analysis for contract {contract_id}")
+        risk_data_list, error = analyze_risks(contract.text, contract_id, clause_dicts)
+
+        # Check if analysis failed
+        if error:
+            logger.error(f"Risk analysis failed for contract {contract_id}: {error}")
+            # Return 400 Bad Request for short/empty text errors, 500 for other errors
+            if "too short for risk analysis" in error or "empty" in error.lower():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=error
+                )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Risk analysis failed: {error}"
+            )
+
+        # 5. Store risk assessments
+        if risk_data_list:
+            # Convert risk data dictionaries to SQLAlchemy RiskAssessment instances
+            risk_models = []
+            for risk_dict in risk_data_list:
+                risk_model = RiskAssessment(
+                    contract_id=contract_id,
+                    clause_id=risk_dict.get('clause_id'),
+                    risk_type=risk_dict['risk_type'],
+                    risk_level=risk_dict['risk_level'],
+                    description=risk_dict['description'],
+                    justification=risk_dict['justification'],
+                    recommendation=risk_dict.get('recommendation')
+                )
+                risk_models.append(risk_model)
+
+            logger.info(f"Storing {len(risk_models)} risk assessments for contract {contract_id}")
+            crud.bulk_create_risk_assessments(db, risk_models)
+
+            # Refresh each risk assessment to materialize auto-generated fields (id, assessed_at)
+            for risk in risk_models:
+                db.refresh(risk)
+
+            logger.info(f"Successfully stored {len(risk_models)} risk assessments")
+
+            # Convert to response models
+            risk_responses = [
+                RiskAssessmentResponse.model_validate(risk)
+                for risk in risk_models
+            ]
+
+            # Get risk summary and normalize to include all levels with default 0
+            risk_summary = crud.count_risks_by_level(db, contract_id)
+            risk_summary = {
+                'high': risk_summary.get('high', 0),
+                'medium': risk_summary.get('medium', 0),
+                'low': risk_summary.get('low', 0)
+            }
+
+            # Get most recent assessed_at timestamp
+            analyzed_at = max(risk.assessed_at for risk in risk_models)
+
+            return RiskAnalysisResponse(
+                contract_id=contract_id,
+                risks=risk_responses,
+                total_risks=len(risk_responses),
+                risk_summary=risk_summary,
+                analyzed_at=analyzed_at
+            )
+        else:
+            # No risks found (well-balanced contract)
+            logger.info(f"No risks identified for contract {contract_id}")
+            return RiskAnalysisResponse(
+                contract_id=contract_id,
+                risks=[],
+                total_risks=0,
+                risk_summary={'high': 0, 'medium': 0, 'low': 0},
+                analyzed_at=datetime.utcnow()
+            )
+
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        logger.error(f"Failed to analyze risks for contract {contract_id}: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to analyze risks"
         )
 

@@ -34,7 +34,7 @@ import logging
 
 # Module-level setup
 logger = logging.getLogger(__name__)
-MODEL_NAME = "gpt-4o"
+MODEL_NAME = "gpt-4o-mini"
 
 # Entity type definitions
 ENTITY_TYPES = ['party', 'date', 'financial_term', 'governing_law', 'obligation']
