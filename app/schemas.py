@@ -304,14 +304,19 @@ class ContractSummaryResponse(BaseModel):
     @field_validator('role')
     @classmethod
     def validate_role(cls, v: Optional[str]) -> Optional[str]:
-        """Validate that role is one of 'supplier', 'client', 'neutral' or None, and normalize to lowercase."""
+        """Validate that role is one of 'supplier', 'client', 'neutral' or None, and normalize to lowercase.
+
+        Note: 'neutral' is converted to None to match storage representation.
+        """
         if v is None:
             return v
         normalized = v.lower()
         valid_values = ['supplier', 'client', 'neutral']
         if normalized not in valid_values:
             raise ValueError(f"Role must be one of {valid_values} or None, got '{v}'")
-        # Return normalized value including 'neutral'
+        # Convert 'neutral' to None to match storage representation
+        if normalized == 'neutral':
+            return None
         return normalized
 
     @field_validator('summary_type')

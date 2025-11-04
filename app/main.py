@@ -762,39 +762,33 @@ def summarize_contract_endpoint(
             )
 
         # Validate and normalize role parameter
-        response_role = role  # Keep original for response
-        storage_role = role   # Use for storage/service calls
-
+        # Service layer will handle 'neutral' -> None conversion
         if role is not None:
-            role_normalized = role.strip().lower()
+            role = role.strip().lower()
             valid_roles = ['supplier', 'client', 'neutral']
-            if role_normalized not in valid_roles:
+            if role not in valid_roles:
                 logger.warning(f"Invalid role parameter: {role}")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Invalid role: {role}. Must be one of: {', '.join(valid_roles)}"
                 )
 
-            # For storage and service calls, treat 'neutral' as None
-            response_role = role_normalized
-            if role_normalized == 'neutral':
-                storage_role = None
-            else:
-                storage_role = role_normalized
+        # Service layer converts 'neutral' -> None, match that for cache/storage consistency
+        storage_role = None if role == 'neutral' else role
 
-        logger.info(f"Processing summarization request for contract {contract_id} with role: {response_role or 'neutral'}")
+        logger.info(f"Processing summarization request for contract {contract_id} with role: {role or 'neutral'}")
 
         # Check for existing cached summary
         existing_summary, existing_data = crud.get_contract_summary(db, contract_id, storage_role)
 
         if existing_summary is not None:
-            logger.info(f"Returning cached summary for contract {contract_id} (role: {response_role or 'neutral'})")
+            logger.info(f"Returning cached summary for contract {contract_id} (role: {role or 'neutral'})")
 
             # Build response from cached data
             return ContractSummaryResponse(
                 contract_id=contract_id,
                 summary_type=existing_data.get('summary_type', 'contract_overview'),
-                role=response_role,
+                role=role,
                 summary=existing_data['summary'],
                 key_points=existing_data['key_points'],
                 parties=existing_data.get('parties'),
@@ -809,8 +803,9 @@ def summarize_contract_endpoint(
             )
 
         # Perform summarization
-        logger.info(f"Generating new summary for contract {contract_id} (role: {storage_role or 'neutral'})")
-        summary_data, error = summarize_contract(contract.text, contract_id, storage_role)
+        # Service layer will convert 'neutral' -> None and handle storage decisions
+        logger.info(f"Generating new summary for contract {contract_id} (role: {role or 'neutral'})")
+        summary_data, error = summarize_contract(contract.text, contract_id, role)
 
         # Check for errors
         if error is not None:
@@ -829,14 +824,14 @@ def summarize_contract_endpoint(
                 )
 
         # Store summary results in database
-        logger.info(f"Storing summary for contract {contract_id} (role: {storage_role or 'neutral'})")
+        logger.info(f"Storing summary for contract {contract_id} (role: {role or 'neutral'})")
         stored_summary = crud.create_contract_summary(db, contract_id, summary_data, storage_role)
 
         # Build response
         response = ContractSummaryResponse(
             contract_id=contract_id,
             summary_type=summary_data.get('summary_type', 'contract_overview'),
-            role=response_role,
+            role=role,
             summary=summary_data['summary'],
             key_points=summary_data['key_points'],
             parties=summary_data.get('parties'),
@@ -852,7 +847,7 @@ def summarize_contract_endpoint(
 
         logger.info(
             f"Successfully generated and stored summary for contract {contract_id} "
-            f"(role: {response_role or 'neutral'}, type: {response.summary_type})"
+            f"(role: {role or 'neutral'}, type: {response.summary_type})"
         )
 
         return response
