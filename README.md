@@ -1,6 +1,6 @@
 # AI Legal Contract Analyst
 
-An AI-powered system for analyzing legal contracts with automated clause segmentation, entity extraction, UK jurisdiction analysis, and comprehensive risk assessment.
+An AI-powered system for analyzing legal contracts with automated clause segmentation, entity extraction, UK jurisdiction analysis, comprehensive risk assessment, and plain-language summarization.
 
 ## Features
 
@@ -8,6 +8,7 @@ An AI-powered system for analyzing legal contracts with automated clause segment
 - **Entity Extraction**: AI-powered extraction of parties, dates, financial terms, governing laws, and obligations
 - **UK Jurisdiction Analysis**: Statute identification, enforceability assessment, and legal principle mapping
 - **Risk Assessment**: Detection of 10 risk categories (termination rights, indemnities, penalties, liability caps, payment terms, IP, confidentiality, warranties, force majeure, dispute resolution) with severity scoring (low/medium/high) and actionable recommendations
+- **Plain-Language Summaries**: AI-powered translation of legal jargon into clear, accessible language using OpenAI GPT-4o-mini. Supports role-specific perspectives (supplier, client, neutral) to highlight relevant information for different stakeholders. Includes key points, parties, dates, financial terms, obligations, rights, termination conditions, and risk overview
 
 ## Quick Start
 
@@ -205,6 +206,91 @@ curl -X POST http://localhost:8000/contracts/1/analyze-risks
 - `medium` - Moderate financial impact (10-50%), operational inconvenience, ambiguous terms
 - `low` - Minor concerns (<10%), standard industry practice with slight unfavorability
 
+### 5. Generate Contract Summary
+
+```bash
+# Neutral summary
+curl -X POST http://localhost:8000/contracts/1/summarize
+
+# Client perspective
+curl -X POST "http://localhost:8000/contracts/1/summarize?role=client"
+
+# Supplier perspective
+curl -X POST "http://localhost:8000/contracts/1/summarize?role=supplier"
+```
+
+**Response:**
+```json
+{
+  "contract_id": 1,
+  "summary_type": "role_specific",
+  "role": "client",
+  "summary": "This is a service agreement between ABC Corp (client) and XYZ Services (supplier) for software development services. The contract runs for 12 months starting January 1, 2024, with automatic renewal unless either party provides 30 days notice. The client will pay £50,000 in monthly installments of £4,167. The agreement includes standard confidentiality provisions and a 90-day termination clause. Key protections for the client include a liability cap at contract value, IP ownership of deliverables, and the right to terminate for cause with 30 days notice.",
+  "key_points": [
+    "12-month contract with automatic renewal",
+    "£50,000 total value paid monthly",
+    "Client owns all IP in deliverables",
+    "90-day termination notice required",
+    "Liability capped at contract value",
+    "Confidentiality obligations for both parties",
+    "Supplier warrants professional workmanship"
+  ],
+  "parties": "ABC Corp (client) and XYZ Services (supplier)",
+  "key_dates": [
+    "Start date: January 1, 2024",
+    "End date: December 31, 2024 (with auto-renewal)",
+    "Payment due: 1st of each month"
+  ],
+  "financial_terms": "Total contract value of £50,000 paid in 12 monthly installments of £4,167. Late payments incur 5% interest per month.",
+  "obligations": {
+    "supplier": [
+      "Deliver software development services",
+      "Maintain confidentiality of client information",
+      "Provide monthly progress reports"
+    ],
+    "client": [
+      "Pay monthly fees on time",
+      "Provide necessary access and information",
+      "Review and approve deliverables within 14 days"
+    ]
+  },
+  "rights": {
+    "supplier": [
+      "Terminate for non-payment after 30 days",
+      "Retain IP in pre-existing materials"
+    ],
+    "client": [
+      "Own all IP in deliverables",
+      "Terminate for cause with 30 days notice",
+      "Receive warranty support for 90 days"
+    ]
+  },
+  "termination": "Either party can terminate with 90 days written notice. Client can terminate for cause (breach, insolvency) with 30 days notice. Supplier can terminate for non-payment after 30 days.",
+  "risks": [
+    "Automatic renewal may lock client into unwanted extension",
+    "Late payment interest rate (5% per month) is relatively high",
+    "Limited warranty period (90 days) may be insufficient for complex software"
+  ],
+  "created_at": "2025-10-28T10:00:00Z"
+}
+```
+
+**What this endpoint does:**
+- Generates plain-language summary using OpenAI GPT-4o-mini
+- Translates legal jargon into clear, accessible language
+- Provides role-specific perspectives when requested
+- Extracts key information: parties, dates, financial terms, obligations, rights
+- Highlights termination conditions and potential risks
+- Stores summaries in database for future reference
+- Returns cached summaries for faster subsequent requests
+
+**Use Cases:**
+- **Executives**: Get quick overview without reading full contract
+- **Procurement**: Understand supplier obligations and client protections
+- **Legal review**: Identify key terms before detailed analysis
+- **Contract comparison**: Compare multiple contracts at high level
+- **Stakeholder communication**: Share accessible summaries with non-lawyers
+
 ## API Endpoints
 
 | Method | Endpoint | Description |
@@ -214,8 +300,9 @@ curl -X POST http://localhost:8000/contracts/1/analyze-risks
 | GET | `/contracts/{id}/entities` | Retrieve extracted entities (optional `?entity_type=` filter) |
 | POST | `/contracts/{id}/analyze-jurisdiction` | Analyze contract through UK contract law lens |
 | POST | `/contracts/{id}/analyze-risks` | Comprehensive risk assessment across 10 categories |
+| POST | `/contracts/{id}/summarize?role={role}` | Plain-language summary generation with optional role perspective (supplier/client/neutral) |
 
-**Note:** Jurisdiction and risk analyses are cached - subsequent requests return cached results without calling OpenAI API again.
+**Note:** Jurisdiction analysis, risk assessments, and summaries are cached - subsequent requests return cached results without calling OpenAI API again.
 
 ## Configuration
 
@@ -232,7 +319,7 @@ Environment variables in `.env`:
 
 - **FastAPI** - Modern Python web framework
 - **PostgreSQL + pgvector** - Database with vector similarity search
-- **OpenAI GPT-4o-mini** - AI model for entity extraction, jurisdiction analysis, and risk assessment
+- **OpenAI GPT-4o-mini** - AI model for entity extraction, jurisdiction analysis, risk assessment, and plain-language summarization
 - **SQLAlchemy 2.0** - ORM with type safety
 - **Pydantic v2** - Data validation
 
@@ -258,8 +345,17 @@ Environment variables in `.env`:
 - Actionable recommendations
 - Risk analysis caching
 
+### ✅ Phase 4: Plain-Language Summaries
+- OpenAI GPT-4o-mini powered summarization (cost-optimized)
+- Contract-level summary generation
+- Role-specific perspectives: supplier, client, neutral
+- Key information extraction: parties, dates, financial terms, obligations, rights
+- Termination conditions and risk overview
+- Database persistence of summaries
+- Caching to prevent redundant API calls
+- Accessible language for non-lawyers
+
 ### 📋 Planned: Future Phases
-- **Phase 4:** Plain-language summaries
 - **Phase 5:** Semantic search with embeddings
 - **Phase 6:** Interactive Q&A system
 
@@ -292,6 +388,18 @@ Environment variables in `.env`:
 - Check logs to verify analysis completed successfully
 - Ensure contract has substantive clauses (>100 characters)
 
+**Summarization fails or returns errors:**
+- Verify OpenAI API key has GPT-4o-mini access
+- Check application logs for detailed error messages
+- Ensure contract text is substantial enough for summarization (> 100 characters)
+- Verify role parameter is valid (supplier/client/neutral) if provided
+- Check OpenAI API usage limits and quotas
+
+**Invalid role parameter error:**
+- Ensure role is one of: supplier, client, neutral (case-insensitive)
+- Omit role parameter for neutral/balanced summary
+- Check for typos in role parameter
+
 ## Security Notes
 
 - **Never commit `.env`** - contains sensitive API keys (already in `.gitignore`)
@@ -308,6 +416,17 @@ Environment variables in `.env`:
 - **May not identify all risks** - AI analysis may miss issues or flag standard practices incorrectly
 - **Requires human review** - All insights must be validated by legal professionals
 - **No warranty** - Provided "as is" without guarantees of accuracy or completeness
+
+### Plain-Language Summarization Disclaimer
+
+The plain-language summarization feature:
+- **Simplifies complex legal language** but may not capture all nuances
+- **Highlights key information** but is not a substitute for reading the full contract
+- **Provides role-specific perspectives** but should not be the sole basis for decisions
+- **Uses AI analysis** which may miss important details or context
+- **Should be validated** by qualified legal professionals before relying on summaries
+
+Summaries are generated by AI and should be used as a starting point for understanding contracts, not as definitive legal interpretations.
 
 ### Data Privacy
 

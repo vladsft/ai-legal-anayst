@@ -19,6 +19,9 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy import func
 from app.models import Contract, Clause, Entity, Summary, RiskAssessment
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
@@ -729,9 +732,11 @@ def get_jurisdiction_analysis(
             parsed_data = json.loads(summary.content)
             return summary, parsed_data
         except json.JSONDecodeError as e:
-            # Log error but return the summary object with None for data
-            # This allows caller to see that analysis exists but couldn't be parsed
-            return summary, None
+            # Delete corrupt cached record and commit
+            logger.error(f"Invalid JSON in jurisdiction analysis {summary.id} for contract {contract_id}, purging: {str(e)}")
+            db.delete(summary)
+            db.commit()
+            return None, None
 
     return None, None
 
@@ -1022,3 +1027,198 @@ def get_high_risk_assessments(db: Session, contract_id: int) -> List[RiskAssessm
         ...     print(f"HIGH RISK: {risk.description}")
     """
     return get_risk_assessments_by_contract(db, contract_id, risk_level='high')
+
+
+# ============================================================================
+# Contract Summary CRUD Operations
+# ============================================================================
+
+def create_contract_summary(
+    db: Session,
+    contract_id: int,
+    summary_data: Dict[str, Any],
+    role: Optional[str] = None
+) -> Summary:
+    """
+    Convenience function for creating contract summary records.
+
+    This is the recommended way to store contract summary results from the
+    summarizer service. Automatically sets the summary_type based on the
+    role parameter and serializes summary data to JSON for storage.
+
+    Args:
+        db: Database session
+        contract_id: Parent contract ID
+        summary_data: Summary data dictionary from summarizer service
+        role: Optional role perspective ('supplier', 'client', or None for neutral)
+
+    Returns:
+        Created Summary object with timestamp
+
+    Raises:
+        Exception: If database operation fails
+
+    Usage:
+        For neutral summaries (balanced perspective):
+            summary = create_contract_summary(db, contract_id=1, summary_data=data, role=None)
+
+        For role-specific summaries:
+            summary = create_contract_summary(db, contract_id=1, summary_data=data, role='supplier')
+            summary = create_contract_summary(db, contract_id=1, summary_data=data, role='client')
+
+    Example:
+        >>> from app.services.summarizer import summarize_contract
+        >>> summary_data, error = summarize_contract(contract_text, 1, role='client')
+        >>> if not error:
+        ...     summary = create_contract_summary(db, 1, summary_data, role='client')
+        ...     print(f"Summary stored with ID {summary.id}")
+    """
+    try:
+        # Determine summary_type based on role
+        if role is None:
+            summary_type = 'contract_overview'
+        else:
+            summary_type = 'role_specific'
+
+        # Serialize summary data to JSON
+        json_content = json.dumps(summary_data, indent=2)
+
+        # Create summary using generic function
+        summary = create_summary(
+            db=db,
+            contract_id=contract_id,
+            summary_type=summary_type,
+            content=json_content,
+            role=role
+        )
+
+        return summary
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to create contract summary for contract {contract_id}: {str(e)}")
+        raise
+
+
+def get_contract_summary(
+    db: Session,
+    contract_id: int,
+    role: Optional[str] = None
+) -> Tuple[Optional[Summary], Optional[Dict[str, Any]]]:
+    """
+    Convenience function for retrieving contract summaries.
+
+    Retrieves the most recent summary for the specified role. If role is None,
+    returns the neutral/contract overview summary. If role is provided, returns
+    the role-specific summary for that role.
+
+    Args:
+        db: Database session
+        contract_id: Parent contract ID
+        role: Optional role perspective ('supplier', 'client', or None for neutral)
+
+    Returns:
+        Tuple of (Summary ORM object, parsed summary data dict) or (None, None) if not found
+
+    Usage:
+        For neutral summary:
+            summary, data = get_contract_summary(db, contract_id=1, role=None)
+
+        For role-specific summary:
+            summary, data = get_contract_summary(db, contract_id=1, role='supplier')
+            summary, data = get_contract_summary(db, contract_id=1, role='client')
+
+    Example:
+        >>> summary, data = get_contract_summary(db, 1, role='client')
+        >>> if summary:
+        ...     print(f"Summary created at: {summary.created_at}")
+        ...     print(f"Main summary: {data['summary']}")
+        ...     print(f"Key points: {data['key_points']}")
+        >>> else:
+        ...     print("No summary found")
+    """
+    try:
+        # Determine summary_type based on role
+        if role is None:
+            summary_type = 'contract_overview'
+        else:
+            summary_type = 'role_specific'
+
+        # Query for the latest summary with appropriate filters
+        query = db.query(Summary).filter(
+            Summary.contract_id == contract_id,
+            Summary.summary_type == summary_type
+        )
+
+        # Add role filter for role-specific summaries
+        if role is not None:
+            query = query.filter(Summary.role == role)
+
+        # Get the most recent summary
+        summary = query.order_by(Summary.created_at.desc()).first()
+
+        if summary is None:
+            return None, None
+
+        # Parse JSON content back to dict
+        try:
+            parsed_data = json.loads(summary.content)
+            return summary, parsed_data
+        except json.JSONDecodeError as e:
+            # Delete corrupt cached record and commit
+            logger.error(f"Invalid JSON in contract summary {summary.id} for contract {contract_id}, purging: {str(e)}")
+            db.delete(summary)
+            db.commit()
+            return None, None
+
+    except Exception as e:
+        logger.error(f"Failed to retrieve contract summary for contract {contract_id}: {str(e)}")
+        return None, None
+
+
+def get_all_contract_summaries(
+    db: Session,
+    contract_id: int
+) -> List[Tuple[Summary, Dict[str, Any]]]:
+    """
+    Retrieve all summaries for a contract (both contract_overview and role_specific).
+
+    This function is useful for listing all available summaries regardless of
+    type or role. Returns both neutral and all role-specific summaries.
+
+    Args:
+        db: Database session
+        contract_id: Parent contract ID
+
+    Returns:
+        List of tuples: [(Summary object, parsed data dict), ...]
+
+    Example:
+        >>> summaries = get_all_contract_summaries(db, contract_id=1)
+        >>> for summary, data in summaries:
+        ...     print(f"Type: {summary.summary_type}, Role: {summary.role}")
+        ...     print(f"Created: {summary.created_at}")
+        ...     print(f"Summary: {data['summary'][:100]}...")
+    """
+    try:
+        # Query for all summaries of relevant types
+        summaries = db.query(Summary).filter(
+            Summary.contract_id == contract_id,
+            Summary.summary_type.in_(['contract_overview', 'role_specific'])
+        ).order_by(Summary.created_at.desc()).all()
+
+        # Parse JSON content for each summary
+        results = []
+        for summary in summaries:
+            try:
+                parsed_data = json.loads(summary.content)
+                results.append((summary, parsed_data))
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse summary {summary.id}: {str(e)}")
+                continue
+
+        return results
+
+    except Exception as e:
+        logger.error(f"Failed to retrieve all summaries for contract {contract_id}: {str(e)}")
+        return []

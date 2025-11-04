@@ -7,7 +7,7 @@ independent evolution of database schema and API responses.
 """
 
 from pydantic import BaseModel, Field, ConfigDict, field_validator
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime
 
 
@@ -266,3 +266,92 @@ class RiskFilterParams(BaseModel):
         if normalized not in valid_types:
             raise ValueError(f"Risk type must be one of {valid_types}, got '{v}'")
         return normalized
+
+
+class ContractSummaryResponse(BaseModel):
+    """
+    Response schema for the POST /contracts/{id}/summarize endpoint.
+
+    This is the main response returned after generating a plain-language summary.
+    It includes a clear, accessible translation of the contract's key terms,
+    parties, dates, financial information, obligations, rights, and risks.
+
+    The summary can be neutral (balanced perspective) or role-specific (highlighting
+    concerns from supplier or client perspective).
+
+    DISCLAIMER: This summary is for informational purposes only and does NOT
+    constitute legal advice. AI-generated summaries may not capture all nuances
+    or important details. Always review full contracts and consult qualified
+    legal professionals for actual legal guidance.
+    """
+    model_config = ConfigDict(from_attributes=True)
+
+    contract_id: int = Field(..., description="Contract database ID")
+    summary_type: str = Field(..., description="Type of summary: 'contract_overview' (neutral) or 'role_specific' (supplier/client perspective)")
+    role: Optional[str] = Field(None, description="Role perspective if role-specific: 'supplier', 'client', or None for neutral")
+    summary: str = Field(..., description="Main plain-language summary (3-5 well-structured paragraphs explaining the contract's purpose, key terms, and overall structure)")
+    key_points: List[str] = Field(..., description="List of 5-10 most important points from the contract, in order of significance")
+    parties: Optional[str] = Field(None, description="Brief description of the parties involved (who is contracting with whom)")
+    key_dates: Optional[List[str]] = Field(None, description="List of important dates, deadlines, milestones, and time periods")
+    financial_terms: Optional[str] = Field(None, description="Clear summary of payment terms, amounts, schedules, and any financial penalties or incentives")
+    obligations: Optional[Dict[str, List[str]]] = Field(None, description="Key obligations by party (e.g., {'supplier': [...], 'client': [...]})")
+    rights: Optional[Dict[str, List[str]]] = Field(None, description="Key rights and protections by party (e.g., {'supplier': [...], 'client': [...]})")
+    termination: Optional[str] = Field(None, description="Explanation of how and when the contract can be terminated, including notice periods and conditions")
+    risks: Optional[List[str]] = Field(None, description="Top 3-5 risks or concerns to be aware of (brief overview, not detailed legal analysis)")
+    confidence: Optional[str] = Field(None, description="Confidence in the summary quality: 'high', 'medium', or 'low'")
+    created_at: datetime = Field(..., description="Timestamp when the summary was generated")
+
+    @field_validator('role')
+    @classmethod
+    def validate_role(cls, v: Optional[str]) -> Optional[str]:
+        """Validate that role is one of 'supplier', 'client', 'neutral' or None, and normalize to lowercase.
+
+        Note: 'neutral' is converted to None to match storage representation.
+        """
+        if v is None:
+            return v
+        normalized = v.lower()
+        valid_values = ['supplier', 'client', 'neutral']
+        if normalized not in valid_values:
+            raise ValueError(f"Role must be one of {valid_values} or None, got '{v}'")
+        # Convert 'neutral' to None to match storage representation
+        if normalized == 'neutral':
+            return None
+        return normalized
+
+    @field_validator('summary_type')
+    @classmethod
+    def validate_summary_type(cls, v: str) -> str:
+        """Validate that summary_type is one of 'contract_overview' or 'role_specific' and normalize to lowercase."""
+        if not v:
+            raise ValueError('Summary type must not be empty')
+        normalized = v.lower()
+        valid_values = ['contract_overview', 'role_specific']
+        if normalized not in valid_values:
+            raise ValueError(f"Summary type must be one of {valid_values}, got '{v}'")
+        return normalized
+
+    @field_validator('confidence')
+    @classmethod
+    def validate_confidence(cls, v: Optional[str]) -> Optional[str]:
+        """Validate that confidence is one of 'high', 'medium', or 'low' and normalize to lowercase."""
+        if v is None:
+            return v
+        normalized = v.lower()
+        valid_values = ['high', 'medium', 'low']
+        if normalized not in valid_values:
+            raise ValueError(f"Confidence must be one of {valid_values}, got '{v}'")
+        return normalized
+
+
+class SummaryListResponse(BaseModel):
+    """
+    Response schema for listing all summaries for a contract.
+
+    This schema is useful for a future GET endpoint that retrieves all available
+    summaries (both neutral and role-specific) for a given contract. Enables
+    clients to see all perspectives that have been generated.
+    """
+    contract_id: int = Field(..., description="Contract database ID")
+    summaries: List[ContractSummaryResponse] = Field(default_factory=list, description="List of summaries (neutral and role-specific)")
+    total_count: int = Field(..., description="Total number of summaries available")

@@ -20,13 +20,15 @@ from app.schemas import (
     EntitiesListResponse,
     JurisdictionAnalysisResponse,
     RiskAnalysisResponse,
-    RiskAssessmentResponse
+    RiskAssessmentResponse,
+    ContractSummaryResponse
 )
 
 # Service imports
 from app.services.entity_extractor import extract_entities
 from app.services.jurisdiction_analyzer import analyze_jurisdiction
 from app.services.risk_analyzer import analyze_risks
+from app.services.summarizer import summarize_contract
 
 # CRUD and model imports
 from app import crud
@@ -451,10 +453,6 @@ def analyze_contract_jurisdiction(
                 recommendations=cached_analysis.get('recommendations', []),
                 analyzed_at=summary.created_at
             )
-        elif summary and cached_analysis is None:
-            # Cached analysis exists but JSON parsing failed - clear invalid record
-            logger.warning(f"Cached jurisdiction analysis for contract {contract_id} has invalid JSON, clearing record")
-            crud.delete_summaries_by_type(db, contract_id, 'jurisdiction_analysis')
 
         # 3. Perform jurisdiction analysis using OpenAI
         logger.info(f"No cached analysis found, performing new analysis for contract {contract_id}")
@@ -689,5 +687,178 @@ def analyze_contract_risks(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to analyze risks"
+        )
+
+
+@app.post("/contracts/{contract_id}/summarize", response_model=ContractSummaryResponse)
+def summarize_contract_endpoint(
+    contract_id: int,
+    role: Optional[str] = None,
+    db: Session = Depends(get_db)
+) -> ContractSummaryResponse:
+    """
+    Generate a plain-language summary of a contract.
+
+    This endpoint translates complex legal jargon into clear, accessible language
+    that non-lawyers can understand. It extracts key information such as parties,
+    dates, financial terms, obligations, rights, termination conditions, and risks.
+
+    The summary can be generated from different perspectives:
+    - **Neutral** (default): Balanced overview without favoring either party
+    - **Supplier**: Highlights supplier obligations, risks, and opportunities
+    - **Client**: Highlights client protections, rights, and concerns
+
+    Results are cached in the database. Subsequent requests with the same role
+    return cached data without calling OpenAI API again, providing faster responses
+    and reducing costs.
+
+    **Args:**
+    - `contract_id` (int): Database ID of the contract to summarize
+    - `role` (Optional[str]): Role perspective ('supplier', 'client', 'neutral', or omit for neutral)
+
+    **Returns:**
+    - `ContractSummaryResponse`: Comprehensive plain-language summary with:
+        - Main summary (3-5 paragraphs)
+        - Key points (5-10 most important items)
+        - Parties involved
+        - Important dates and deadlines
+        - Financial terms and payment information
+        - Obligations for each party
+        - Rights and protections for each party
+        - Termination conditions
+        - Top risks to be aware of
+
+    **HTTP Status Codes:**
+    - 200 OK: Summary generated or retrieved successfully
+    - 400 Bad Request: Invalid role parameter or contract text too short
+    - 404 Not Found: Contract does not exist
+    - 500 Internal Server Error: Summarization failed (OpenAI error, parsing error, etc.)
+
+    **Example Usage:**
+    ```bash
+    # Neutral summary
+    curl -X POST http://localhost:8000/contracts/1/summarize
+
+    # Client perspective
+    curl -X POST "http://localhost:8000/contracts/1/summarize?role=client"
+
+    # Supplier perspective
+    curl -X POST "http://localhost:8000/contracts/1/summarize?role=supplier"
+    ```
+
+    **DISCLAIMER:**
+    This summary is for informational purposes only and does NOT constitute legal advice.
+    AI-generated summaries may not capture all nuances or important details. Always review
+    the full contract and consult qualified legal professionals for actual legal guidance.
+    """
+    try:
+        # Validate contract exists
+        contract = crud.get_contract(db, contract_id)
+        if contract is None:
+            logger.warning(f"Contract {contract_id} not found for summarization")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Contract {contract_id} not found"
+            )
+
+        # Validate and normalize role parameter
+        # Service layer will handle 'neutral' -> None conversion
+        if role is not None:
+            role = role.strip().lower()
+            valid_roles = ['supplier', 'client', 'neutral']
+            if role not in valid_roles:
+                logger.warning(f"Invalid role parameter: {role}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid role: {role}. Must be one of: {', '.join(valid_roles)}"
+                )
+
+        # Service layer converts 'neutral' -> None, match that for cache/storage consistency
+        storage_role = None if role == 'neutral' else role
+
+        logger.info(f"Processing summarization request for contract {contract_id} with role: {role or 'neutral'}")
+
+        # Check for existing cached summary
+        existing_summary, existing_data = crud.get_contract_summary(db, contract_id, storage_role)
+
+        if existing_summary is not None:
+            logger.info(f"Returning cached summary for contract {contract_id} (role: {role or 'neutral'})")
+
+            # Build response from cached data
+            return ContractSummaryResponse(
+                contract_id=contract_id,
+                summary_type=existing_data.get('summary_type', 'contract_overview'),
+                role=role,
+                summary=existing_data['summary'],
+                key_points=existing_data['key_points'],
+                parties=existing_data.get('parties'),
+                key_dates=existing_data.get('key_dates'),
+                financial_terms=existing_data.get('financial_terms'),
+                obligations=existing_data.get('obligations'),
+                rights=existing_data.get('rights'),
+                termination=existing_data.get('termination'),
+                risks=existing_data.get('risks'),
+                confidence=existing_data.get('confidence'),
+                created_at=existing_summary.created_at
+            )
+
+        # Perform summarization
+        # Service layer will convert 'neutral' -> None and handle storage decisions
+        logger.info(f"Generating new summary for contract {contract_id} (role: {role or 'neutral'})")
+        summary_data, error = summarize_contract(contract.text, contract_id, role)
+
+        # Check for errors
+        if error is not None:
+            logger.error(f"Summarization failed for contract {contract_id}: {error}")
+
+            # Check for specific error types
+            if "too short" in error.lower():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=error
+                )
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to generate summary: {error}"
+                )
+
+        # Store summary results in database
+        logger.info(f"Storing summary for contract {contract_id} (role: {role or 'neutral'})")
+        stored_summary = crud.create_contract_summary(db, contract_id, summary_data, storage_role)
+
+        # Build response
+        response = ContractSummaryResponse(
+            contract_id=contract_id,
+            summary_type=summary_data.get('summary_type', 'contract_overview'),
+            role=role,
+            summary=summary_data['summary'],
+            key_points=summary_data['key_points'],
+            parties=summary_data.get('parties'),
+            key_dates=summary_data.get('key_dates'),
+            financial_terms=summary_data.get('financial_terms'),
+            obligations=summary_data.get('obligations'),
+            rights=summary_data.get('rights'),
+            termination=summary_data.get('termination'),
+            risks=summary_data.get('risks'),
+            confidence=summary_data.get('confidence'),
+            created_at=stored_summary.created_at
+        )
+
+        logger.info(
+            f"Successfully generated and stored summary for contract {contract_id} "
+            f"(role: {role or 'neutral'}, type: {response.summary_type})"
+        )
+
+        return response
+
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        logger.error(f"Failed to summarize contract {contract_id}: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate summary"
         )
 
