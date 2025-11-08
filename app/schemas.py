@@ -39,7 +39,7 @@ class QuestionRequest(BaseModel):
     This is used by the POST /contracts/{id}/ask endpoint to enable
     interactive Q&A functionality using semantic search and AI.
     """
-    question: str = Field(..., min_length=5, description="User's natural language question about the contract")
+    question: str = Field(..., min_length=10, description="User's natural language question about the contract")
 
     @field_validator('question')
     @classmethod
@@ -47,8 +47,8 @@ class QuestionRequest(BaseModel):
         """Validate that question is not empty or whitespace only and meets minimum length."""
         if not v or not v.strip():
             raise ValueError('Question must not be empty')
-        if len(v.strip()) < 5:
-            raise ValueError('Question must be at least 5 characters long')
+        if len(v.strip()) < 10:
+            raise ValueError('Question must be at least 10 characters long')
         return v
 
 

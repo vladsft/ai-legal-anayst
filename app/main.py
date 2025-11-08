@@ -890,7 +890,7 @@ def ask_contract_question(
 
     **Args:**
     - `contract_id` (int): Database ID of the contract to ask about
-    - `question` (str): Natural language question about the contract (minimum 5 characters)
+    - `question` (str): Natural language question about the contract (minimum 10 characters)
 
     **Returns:**
     - `QAResponse`: Comprehensive answer with:

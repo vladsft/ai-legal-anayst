@@ -1434,5 +1434,5 @@ def parse_referenced_clauses(referenced_clauses_json: Optional[str]) -> List[int
             return [int(cid) for cid in clause_ids if isinstance(cid, (int, str)) and str(cid).isdigit()]
         return []
     except (json.JSONDecodeError, ValueError, TypeError) as e:
-        logger.error(f"Failed to parse referenced_clauses JSON: {str(e)}")
+        logger.exception(f"Failed to parse referenced_clauses JSON: {str(e)}")
         return []

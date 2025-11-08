@@ -71,7 +71,7 @@ TOP_K_CLAUSES = 5  # Number of most similar clauses to retrieve
 SIMILARITY_THRESHOLD = 0.7  # Minimum similarity score (0-1 range, not currently enforced)
 
 # Input validation
-MIN_QUESTION_LENGTH = 5  # Minimum characters for a valid question
+MIN_QUESTION_LENGTH = 10  # Minimum characters for a valid question (matches embedding requirement)
 
 # Context building
 MAX_CONTEXT_LENGTH = 6000  # Maximum context length in characters (leave room for answer)
