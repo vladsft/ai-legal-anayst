@@ -17,7 +17,8 @@ from typing import Optional, List, Dict, Any, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy import func
-from app.models import Contract, Clause, Entity, Summary, RiskAssessment
+from app.models import Contract, Clause, Entity, Summary, RiskAssessment, QAHistory
+from app.services.embeddings import generate_embeddings_batch
 import json
 import logging
 
@@ -283,10 +284,12 @@ def get_clauses_by_contract(db: Session, contract_id: int) -> List[Clause]:
 
 def bulk_create_clauses(db: Session, clauses: List[Clause]) -> None:
     """
-    Efficiently insert multiple clauses in a single transaction.
+    Efficiently insert multiple clauses in a single transaction and generate embeddings.
 
     This optimizes insertion of multiple clauses from segmentation,
-    reducing database round-trips.
+    reducing database round-trips. After clause insertion, automatically generates
+    OpenAI text-embedding-3-small vectors (1536 dimensions) for each clause to enable
+    semantic search capabilities.
 
     IMPORTANT LIMITATIONS:
     - This function uses `bulk_save_objects()` which does NOT populate
@@ -302,6 +305,12 @@ def bulk_create_clauses(db: Session, clauses: List[Clause]) -> None:
     - If any clause violates the constraint, the entire transaction is rolled back
       and a DuplicateClauseError is raised (chained from the original IntegrityError).
     - Callers should handle DuplicateClauseError to detect duplicate clauses.
+
+    EMBEDDING GENERATION:
+    - After clause insertion, embeddings are automatically generated for all clauses
+    - Uses OpenAI text-embedding-3-small (1536 dimensions) for semantic search
+    - Embedding failures are non-fatal and logged as warnings
+    - Clauses without embeddings can still be used but won't appear in semantic search
 
     Alternative approach when IDs are needed:
         for clause in clauses:
@@ -321,6 +330,7 @@ def bulk_create_clauses(db: Session, clauses: List[Clause]) -> None:
     Note:
         Callers should not expect clause.id to be populated after this call.
         If IDs are needed, query the database again or use add_all() instead.
+        Embedding generation is automatic and non-fatal (failures logged but don't raise exceptions).
     """
     try:
         db.bulk_save_objects(clauses)
@@ -336,6 +346,58 @@ def bulk_create_clauses(db: Session, clauses: List[Clause]) -> None:
             ) from e
         # Re-raise other integrity errors as-is to preserve DBAPI details
         raise
+
+    # Generate embeddings for all clauses after successful insertion
+    # Note: We need to query the clauses back to get their database IDs since bulk_save_objects
+    # doesn't populate IDs on the objects
+    logger.info(f"Generating embeddings for {len(clauses)} clauses")
+
+    # Build a single IN filter to query all inserted clauses in one DB call
+    clause_filters = [(clause.contract_id, clause.clause_id) for clause in clauses]
+
+    # Query all inserted clauses using IN filter on (contract_id, clause_id)
+    from sqlalchemy import tuple_
+    db_clauses = db.query(Clause).filter(
+        tuple_(Clause.contract_id, Clause.clause_id).in_(clause_filters)
+    ).all()
+
+    if len(db_clauses) != len(clauses):
+        logger.warning(
+            f"Retrieved {len(db_clauses)} clauses from database but expected {len(clauses)}"
+        )
+
+    # Build list of texts in order and call batch embedding generation
+    clause_texts = [db_clause.text for db_clause in db_clauses]
+    embeddings_list, errors_list = generate_embeddings_batch(clause_texts)
+
+    # Iterate over results and set embeddings for successful items
+    successful_embeddings = 0
+    failed_embeddings = 0
+
+    for i, (db_clause, embedding_vector, error) in enumerate(zip(db_clauses, embeddings_list, errors_list)):
+        if error:
+            # Log warning but don't fail - embeddings are optional
+            logger.warning(
+                f"Failed to generate embedding for clause {db_clause.clause_id} "
+                f"(contract {db_clause.contract_id}): {error}"
+            )
+            failed_embeddings += 1
+        else:
+            # Update clause with embedding
+            db_clause.embedding = embedding_vector
+            successful_embeddings += 1
+
+    # Commit all embedding updates once after the loop
+    try:
+        db.commit()
+        logger.info(
+            f"Embedding generation complete: {successful_embeddings} successful, "
+            f"{failed_embeddings} failed out of {len(clauses)} total clauses"
+        )
+    except Exception as e:
+        # If embedding updates fail, log but don't raise - clauses are already created
+        logger.error(f"Failed to save embeddings to database: {str(e)}")
+        db.rollback()
 
 
 # ============================================================================
@@ -1221,4 +1283,156 @@ def get_all_contract_summaries(
 
     except Exception as e:
         logger.error(f"Failed to retrieve all summaries for contract {contract_id}: {str(e)}")
+        return []
+
+
+# ============================================================================
+# QA History CRUD Operations
+# ============================================================================
+
+
+def create_qa_record(
+    db: Session,
+    contract_id: int,
+    question: str,
+    answer: str,
+    referenced_clause_ids: List[int],
+    confidence: Optional[str] = None
+) -> QAHistory:
+    """
+    Create a Q&A record from the qa_engine service.
+
+    This function stores a question-answer interaction in the database, including
+    the list of clause IDs that were referenced in generating the answer. The
+    referenced_clause_ids list is automatically serialized to JSON for storage.
+
+    Args:
+        db: Database session
+        contract_id: Parent contract ID
+        question: User's natural language question
+        answer: AI-generated answer (2-4 paragraphs)
+        referenced_clause_ids: List of clause database IDs used to generate answer
+        confidence: Optional answer confidence level (high/medium/low)
+
+    Returns:
+        QAHistory: Created Q&A history object with auto-generated ID and timestamp
+
+    Raises:
+        IntegrityError: For foreign key violations (invalid contract_id)
+        SQLAlchemyError: On other database operation failures
+
+    Example:
+        >>> qa_record = create_qa_record(
+        ...     db, contract_id=1, question="Can client terminate early?",
+        ...     answer="Yes, client can terminate...", referenced_clause_ids=[5, 6, 7],
+        ...     confidence="high"
+        ... )
+        >>> print(f"Q&A stored with ID {qa_record.id} at {qa_record.asked_at}")
+    """
+    # Convert referenced_clause_ids list to JSON string
+    referenced_clauses_json = json.dumps(referenced_clause_ids)
+
+    qa_history = QAHistory(
+        contract_id=contract_id,
+        question=question,
+        answer=answer,
+        referenced_clauses=referenced_clauses_json,
+        confidence=confidence
+    )
+
+    db.add(qa_history)
+    try:
+        db.commit()
+        db.refresh(qa_history)  # Refresh to get auto-generated ID and timestamp
+        return qa_history
+    except Exception:
+        db.rollback()
+        raise
+
+
+def get_qa_history_by_contract(
+    db: Session,
+    contract_id: int,
+    limit: int = 50
+) -> List[QAHistory]:
+    """
+    Retrieve Q&A conversation history for a contract.
+
+    Returns the most recent questions first, limited to prevent overwhelming
+    responses. This provides conversation history for a contract's Q&A interactions.
+
+    Args:
+        db: Database session
+        contract_id: Parent contract ID
+        limit: Maximum number of Q&A records to return (default 50)
+
+    Returns:
+        List of QAHistory objects ordered by asked_at descending (most recent first)
+
+    Example:
+        >>> # Get last 20 Q&A interactions
+        >>> qa_history = get_qa_history_by_contract(db, contract_id=1, limit=20)
+        >>> for qa in qa_history:
+        ...     print(f"Q: {qa.question}")
+        ...     print(f"A: {qa.answer[:100]}...")
+        ...     print(f"Asked at: {qa.asked_at}")
+    """
+    return db.query(QAHistory).filter(
+        QAHistory.contract_id == contract_id
+    ).order_by(
+        QAHistory.asked_at.desc()
+    ).limit(limit).all()
+
+
+def get_qa_record(db: Session, qa_id: int) -> Optional[QAHistory]:
+    """
+    Retrieve a specific Q&A interaction by ID.
+
+    This retrieves a single Q&A record for viewing or auditing purposes.
+
+    Args:
+        db: Database session
+        qa_id: Q&A history primary key
+
+    Returns:
+        QAHistory object if found, None otherwise
+
+    Example:
+        >>> qa = get_qa_record(db, qa_id=1)
+        >>> if qa:
+        ...     print(f"Question: {qa.question}")
+        ...     print(f"Answer: {qa.answer}")
+    """
+    return db.query(QAHistory).filter(QAHistory.id == qa_id).first()
+
+
+def parse_referenced_clauses(referenced_clauses_json: Optional[str]) -> List[int]:
+    """
+    Helper function to parse JSON string back to list of clause IDs.
+
+    This safely parses the referenced_clauses field from QAHistory objects,
+    handling None values and JSON decode errors gracefully.
+
+    Args:
+        referenced_clauses_json: JSON string containing list of clause IDs
+
+    Returns:
+        List of clause IDs (empty list if None or parse error)
+
+    Example:
+        >>> qa = get_qa_record(db, qa_id=1)
+        >>> clause_ids = parse_referenced_clauses(qa.referenced_clauses)
+        >>> print(f"Referenced clauses: {clause_ids}")
+    """
+    if not referenced_clauses_json:
+        return []
+
+    try:
+        clause_ids = json.loads(referenced_clauses_json)
+        # Ensure it's a list of integers
+        if isinstance(clause_ids, list):
+            return [int(cid) for cid in clause_ids if isinstance(cid, (int, str)) and str(cid).isdigit()]
+        return []
+    except (json.JSONDecodeError, ValueError, TypeError) as e:
+        logger.error(f"Failed to parse referenced_clauses JSON: {str(e)}")
         return []
