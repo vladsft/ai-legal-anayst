@@ -21,7 +21,9 @@ from app.schemas import (
     JurisdictionAnalysisResponse,
     RiskAnalysisResponse,
     RiskAssessmentResponse,
-    ContractSummaryResponse
+    ContractSummaryResponse,
+    QuestionRequest,
+    QAResponse
 )
 
 # Service imports
@@ -29,6 +31,7 @@ from app.services.entity_extractor import extract_entities
 from app.services.jurisdiction_analyzer import analyze_jurisdiction
 from app.services.risk_analyzer import analyze_risks
 from app.services.summarizer import summarize_contract
+from app.services.qa_engine import answer_question
 
 # CRUD and model imports
 from app import crud
@@ -860,5 +863,169 @@ def summarize_contract_endpoint(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to generate summary"
+        )
+
+
+# --------------------------
+# Interactive Q&A Endpoint
+# --------------------------
+
+@app.post("/contracts/{contract_id}/ask", response_model=QAResponse)
+def ask_contract_question(
+    contract_id: int,
+    req: QuestionRequest,
+    db: Session = Depends(get_db)
+) -> QAResponse:
+    """
+    Answer natural language questions about a contract using semantic search and AI.
+
+    This endpoint enables interactive question-answering about contract content using
+    semantic search with pgvector and GPT-4o-mini. The system:
+    1. Generates an embedding for your question using OpenAI text-embedding-3-small
+    2. Searches for the most relevant clauses using pgvector L2 distance similarity
+    3. Retrieves the top 5 most similar clauses as context
+    4. Uses GPT-4o-mini to generate a comprehensive answer based on the context
+    5. Returns the answer with clause references and confidence level
+    6. Stores the Q&A interaction in the database for future reference
+
+    **Args:**
+    - `contract_id` (int): Database ID of the contract to ask about
+    - `question` (str): Natural language question about the contract (minimum 10 characters)
+
+    **Returns:**
+    - `QAResponse`: Comprehensive answer with:
+        - Answer text (2-4 paragraphs)
+        - List of clause database IDs used to generate the answer
+        - Confidence level (high/medium/low)
+        - Timestamp of the interaction
+
+    **HTTP Status Codes:**
+    - 200 OK: Question answered successfully
+    - 400 Bad Request: Question too short or no clause embeddings found
+    - 404 Not Found: Contract does not exist
+    - 500 Internal Server Error: Q&A failed (OpenAI error, embedding error, etc.)
+
+    **Example Usage:**
+    ```bash
+    curl -X POST http://localhost:8000/contracts/1/ask \\
+      -H "Content-Type: application/json" \\
+      -d '{"question": "Can the client terminate the contract early?"}'
+
+    curl -X POST http://localhost:8000/contracts/1/ask \\
+      -H "Content-Type: application/json" \\
+      -d '{"question": "What are the payment terms and deadlines?"}'
+
+    curl -X POST http://localhost:8000/contracts/1/ask \\
+      -H "Content-Type: application/json" \\
+      -d '{"question": "Who is responsible for maintaining confidentiality?"}'
+    ```
+
+    **How It Works:**
+    1. **Question Embedding**: Generates a 1536-dimensional vector for your question
+    2. **Semantic Search**: Uses pgvector's L2 distance to find 5 most relevant clauses
+    3. **Context Building**: Formats retrieved clauses as context for the AI
+    4. **Answer Generation**: GPT-4o-mini generates comprehensive answer from context
+    5. **Clause Linking**: Returns database IDs of clauses used in the answer
+    6. **History Storage**: Stores the Q&A interaction for future reference
+
+    **Use Cases:**
+    - **Quick Contract Review**: Get instant answers without reading entire contract
+    - **Due Diligence**: Ask targeted questions about specific terms
+    - **Negotiation Prep**: Understand key provisions before discussions
+    - **Compliance Check**: Verify specific obligations and requirements
+    - **Risk Assessment**: Ask about termination rights, liability, penalties
+
+    **DISCLAIMER:**
+    Answers are for informational purposes only and do NOT constitute legal advice.
+    AI-generated answers are based on semantic search and may not capture all relevant
+    clauses or nuances. Always review the full contract and consult qualified legal
+    professionals for actual legal guidance.
+    """
+    try:
+        # Validate contract exists
+        contract = crud.get_contract(db, contract_id)
+        if contract is None:
+            logger.warning(f"Contract {contract_id} not found for Q&A")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Contract {contract_id} not found"
+            )
+
+        logger.info(f"Processing Q&A request for contract {contract_id}: {req.question[:100]}...")
+
+        # Check for clauses with embeddings
+        clauses = crud.get_clauses_by_contract(db, contract_id)
+        clauses_with_embeddings = [c for c in clauses if c.embedding is not None]
+
+        if not clauses_with_embeddings:
+            logger.warning(f"No clause embeddings found for contract {contract_id}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No clause embeddings found. Contract may not have been fully processed. Please try re-uploading the contract."
+            )
+
+        logger.info(f"Found {len(clauses_with_embeddings)} clauses with embeddings for contract {contract_id}")
+
+        # Perform Q&A
+        qa_data, error = answer_question(db, contract_id, req.question, contract.text)
+
+        # Check for errors
+        if error is not None:
+            logger.error(f"Q&A failed for contract {contract_id}: {error}")
+
+            # Check for specific error types
+            if "too short" in error.lower():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=error
+                )
+            elif "no clauses found" in error.lower() or "missing embeddings" in error.lower():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=error
+                )
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to answer question: {error}"
+                )
+
+        # Extract data from qa_data
+        answer = qa_data['answer']
+        referenced_clause_ids = qa_data.get('referenced_clause_ids', [])
+        confidence = qa_data.get('confidence')
+
+        # Store Q&A history
+        logger.info(f"Storing Q&A record for contract {contract_id}")
+        qa_record = crud.create_qa_record(
+            db, contract_id, req.question, answer, referenced_clause_ids, confidence
+        )
+
+        logger.info(
+            f"Successfully answered question for contract {contract_id} "
+            f"(referenced {len(referenced_clause_ids)} clauses, confidence: {confidence})"
+        )
+
+        # Build response
+        response = QAResponse(
+            id=qa_record.id,
+            contract_id=contract_id,
+            question=req.question,
+            answer=answer,
+            referenced_clauses=referenced_clause_ids,
+            confidence=confidence,
+            asked_at=qa_record.asked_at
+        )
+
+        return response
+
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        logger.error(f"Failed to answer question for contract {contract_id}: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to answer question"
         )
 

@@ -9,6 +9,7 @@ An AI-powered system for analyzing legal contracts with automated clause segment
 - **UK Jurisdiction Analysis**: Statute identification, enforceability assessment, and legal principle mapping
 - **Risk Assessment**: Detection of 10 risk categories (termination rights, indemnities, penalties, liability caps, payment terms, IP, confidentiality, warranties, force majeure, dispute resolution) with severity scoring (low/medium/high) and actionable recommendations
 - **Plain-Language Summaries**: AI-powered translation of legal jargon into clear, accessible language using OpenAI GPT-4o-mini. Supports role-specific perspectives (supplier, client, neutral) to highlight relevant information for different stakeholders. Includes key points, parties, dates, financial terms, obligations, rights, termination conditions, and risk overview
+- **Interactive Q&A**: AI-powered question answering using semantic search with pgvector and GPT-4o-mini. Ask natural language questions about contracts and receive comprehensive answers with clause references. Uses OpenAI text-embedding-3-small for vector embeddings (1536 dimensions) and L2 distance similarity search to find relevant clauses, then generates contextual answers using GPT-4o-mini. Embeddings are automatically generated during contract upload for immediate Q&A readiness
 
 ## Quick Start
 
@@ -291,18 +292,76 @@ curl -X POST "http://localhost:8000/contracts/1/summarize?role=supplier"
 - **Contract comparison**: Compare multiple contracts at high level
 - **Stakeholder communication**: Share accessible summaries with non-lawyers
 
+### 6. Ask Questions About the Contract
+
+```bash
+curl -X POST http://localhost:8000/contracts/1/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question": "Can the client terminate the contract early?"}'
+```
+
+**Response:**
+```json
+{
+  "id": 1,
+  "contract_id": 1,
+  "question": "Can the client terminate the contract early?",
+  "answer": "Yes, the client can terminate the contract early under specific conditions outlined in Clause 8.2. The contract allows for early termination with 30 days written notice if the supplier fails to meet performance standards or breaches material terms. Additionally, Clause 8.3 permits termination for convenience with 90 days notice, though this requires payment of a termination fee equal to 25% of remaining contract value. The client also has the right to immediate termination without penalty in cases of supplier insolvency, fraud, or willful misconduct as specified in Clause 8.4.",
+  "referenced_clauses": [15, 16, 17],
+  "confidence": "high",
+  "asked_at": "2025-10-28T10:00:00Z"
+}
+```
+
+**How It Works:**
+1. **Question Embedding**: Generates a vector embedding for your question using OpenAI text-embedding-3-small (1536 dimensions)
+2. **Semantic Search**: Uses pgvector's L2 distance similarity search to find the 5 most relevant clauses
+3. **Context Building**: Formats retrieved clauses as context for the AI
+4. **Answer Generation**: Uses GPT-4o-mini to generate a comprehensive answer based on the relevant clauses
+5. **Clause Linking**: Returns database IDs of clauses used in the answer for easy reference
+6. **History Storage**: Stores the Q&A interaction in the database for future reference
+
+**What this endpoint does:**
+- Generates semantic embedding for your question using text-embedding-3-small
+- Searches contract clauses using pgvector L2 distance similarity
+- Retrieves top 5 most relevant clauses as context
+- Uses GPT-4o-mini to generate comprehensive answer from context
+- Links answer to specific clauses for verification
+- Stores Q&A interaction in database for history
+- Returns confidence level for answer quality
+
+**Use Cases:**
+- **Quick Contract Review**: Get instant answers without reading entire contract
+- **Due Diligence**: Ask targeted questions about specific terms
+- **Negotiation Prep**: Understand key provisions before discussions
+- **Compliance Check**: Verify specific obligations and requirements
+- **Risk Assessment**: Ask about termination rights, liability, penalties
+
+**Good Question Examples:**
+- "What are the payment terms and deadlines?"
+- "Who is responsible for maintaining confidentiality?"
+- "How can either party terminate this agreement?"
+- "What happens if the supplier breaches the contract?"
+- "Are there any penalty clauses or liquidated damages?"
+
+**DISCLAIMER:**
+Answers are for informational purposes only and do NOT constitute legal advice. AI-generated answers are based on semantic search and may not capture all relevant clauses or nuances. Always review the full contract and consult qualified legal professionals for actual legal guidance.
+
 ## API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/health` | Service health check |
-| POST | `/contracts/segment` | Upload and process contract (segmentation + entity extraction) |
+| POST | `/contracts/segment` | Upload and process contract (segmentation + entity extraction + embedding generation) |
 | GET | `/contracts/{id}/entities` | Retrieve extracted entities (optional `?entity_type=` filter) |
 | POST | `/contracts/{id}/analyze-jurisdiction` | Analyze contract through UK contract law lens |
 | POST | `/contracts/{id}/analyze-risks` | Comprehensive risk assessment across 10 categories |
 | POST | `/contracts/{id}/summarize?role={role}` | Plain-language summary generation with optional role perspective (supplier/client/neutral) |
+| POST | `/contracts/{id}/ask` | Interactive Q&A with semantic search and AI-powered answer generation |
 
-**Note:** Jurisdiction analysis, risk assessments, and summaries are cached - subsequent requests return cached results without calling OpenAI API again.
+**Note:**
+- Jurisdiction analysis, risk assessments, and summaries are cached - subsequent requests return cached results without calling OpenAI API again.
+- Embeddings are automatically generated during contract upload for immediate Q&A readiness. No caching for Q&A (each question is answered fresh).
 
 ## Configuration
 
@@ -319,9 +378,11 @@ Environment variables in `.env`:
 
 - **FastAPI** - Modern Python web framework
 - **PostgreSQL + pgvector** - Database with vector similarity search
-- **OpenAI GPT-4o-mini** - AI model for entity extraction, jurisdiction analysis, risk assessment, and plain-language summarization
+- **OpenAI GPT-4o-mini** - AI model for entity extraction, jurisdiction analysis, risk assessment, plain-language summarization, and Q&A answer generation
+- **OpenAI text-embedding-3-small** - Embedding model for semantic search (1536 dimensions)
 - **SQLAlchemy 2.0** - ORM with type safety
 - **Pydantic v2** - Data validation
+- **Semantic Search** - pgvector with L2 distance similarity and IVFFlat index for fast clause retrieval
 
 ## Development Status
 
@@ -355,9 +416,24 @@ Environment variables in `.env`:
 - Caching to prevent redundant API calls
 - Accessible language for non-lawyers
 
+### ✅ Phase 5: Interactive Q&A with Semantic Search
+- OpenAI text-embedding-3-small for clause embeddings (1536 dimensions)
+- Automatic embedding generation during contract upload
+- pgvector similarity search using L2 distance
+- IVFFlat index for fast similarity queries
+- GPT-4o-mini powered answer generation
+- Top-5 clause retrieval for context
+- Clause-linked answers for verification
+- Q&A history storage in database
+- Confidence levels for answer quality
+
+**API Endpoints:**
+- `POST /contracts/{id}/ask` - Interactive question answering
+
 ### 📋 Planned: Future Phases
-- **Phase 5:** Semantic search with embeddings
-- **Phase 6:** Interactive Q&A system
+- **Phase 6:** Contract comparison and gap analysis
+- **Phase 7:** Custom clause library and template generation
+- **Phase 8:** Multi-language support
 
 ## Troubleshooting
 
@@ -400,6 +476,24 @@ Environment variables in `.env`:
 - Omit role parameter for neutral/balanced summary
 - Check for typos in role parameter
 
+**Q&A fails with "no embeddings found" error:**
+- Embeddings are generated automatically during contract upload
+- If you uploaded a contract before this feature was implemented, re-upload it
+- Check application logs to verify embedding generation succeeded
+- Verify pgvector extension is enabled: `psql -d <database> -c "SELECT * FROM pg_extension WHERE extname='vector';"`
+
+**Q&A returns irrelevant answers:**
+- Try rephrasing your question to be more specific
+- Check the referenced_clauses to see which clauses were used
+- The semantic search retrieves top 5 most similar clauses - if your question is too broad, results may vary
+- Consider asking multiple specific questions instead of one broad question
+
+**Embedding generation fails during upload:**
+- Verify OpenAI API key has access to text-embedding-3-small model
+- Check application logs for detailed error messages
+- Embedding failures are non-fatal - contract upload will succeed but Q&A won't work
+- Re-upload the contract to retry embedding generation
+
 ## Security Notes
 
 - **Never commit `.env`** - contains sensitive API keys (already in `.gitignore`)
@@ -427,6 +521,18 @@ The plain-language summarization feature:
 - **Should be validated** by qualified legal professionals before relying on summaries
 
 Summaries are generated by AI and should be used as a starting point for understanding contracts, not as definitive legal interpretations.
+
+### Interactive Q&A Disclaimer
+
+The interactive Q&A feature:
+- **Uses semantic search** which may not find all relevant clauses
+- **Generates AI answers** based on retrieved context, which may be incomplete
+- **Should not be the sole basis** for legal decisions or contract interpretation
+- **Requires human review** by qualified legal professionals
+- **May miss important clauses** if they don't match the question semantically
+- **Provides confidence levels** but these are AI-generated estimates, not legal assessments
+
+Q&A answers are generated by AI and should be validated by legal counsel before taking action.
 
 ### Data Privacy
 

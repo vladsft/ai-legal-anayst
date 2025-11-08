@@ -32,6 +32,26 @@ class ContractUploadRequest(BaseModel):
         return v
 
 
+class QuestionRequest(BaseModel):
+    """
+    Request schema for asking questions about a contract.
+
+    This is used by the POST /contracts/{id}/ask endpoint to enable
+    interactive Q&A functionality using semantic search and AI.
+    """
+    question: str = Field(..., min_length=10, description="User's natural language question about the contract")
+
+    @field_validator('question')
+    @classmethod
+    def question_not_empty(cls, v: str) -> str:
+        """Validate that question is not empty or whitespace only and meets minimum length."""
+        if not v or not v.strip():
+            raise ValueError('Question must not be empty')
+        if len(v.strip()) < 10:
+            raise ValueError('Question must be at least 10 characters long')
+        return v
+
+
 # Response Schemas
 
 class ClauseResponse(BaseModel):
@@ -355,3 +375,55 @@ class SummaryListResponse(BaseModel):
     contract_id: int = Field(..., description="Contract database ID")
     summaries: List[ContractSummaryResponse] = Field(default_factory=list, description="List of summaries (neutral and role-specific)")
     total_count: int = Field(..., description="Total number of summaries available")
+
+
+class QAResponse(BaseModel):
+    """
+    Response schema for the POST /contracts/{id}/ask endpoint.
+
+    This is the main response returned after asking a question about a contract.
+    It includes the AI-generated answer, list of clause IDs used to generate the
+    answer, confidence level, and timestamps for the interaction.
+
+    The referenced_clauses field contains database IDs of clauses that were used
+    to generate the answer, enabling clients to fetch full clause text for verification.
+
+    DISCLAIMER: This answer is for informational purposes only and does NOT
+    constitute legal advice. AI-generated answers are based on semantic search
+    and may not capture all relevant clauses or nuances. Always review the full
+    contract and consult qualified legal professionals for actual legal guidance.
+    """
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int = Field(..., description="Database primary key of the Q&A record")
+    contract_id: int = Field(..., description="Contract database ID")
+    question: str = Field(..., description="User's natural language question")
+    answer: str = Field(..., description="AI-generated comprehensive answer (2-4 paragraphs)")
+    referenced_clauses: List[int] = Field(default_factory=list, description="List of clause database IDs used to generate the answer")
+    confidence: Optional[str] = Field(None, description="Answer confidence level: 'high' (directly supported by clear clauses), 'medium' (requires interpretation), or 'low' (partially supported or vague)")
+    asked_at: datetime = Field(..., description="Timestamp when the question was asked")
+
+    @field_validator('confidence')
+    @classmethod
+    def validate_confidence(cls, v: Optional[str]) -> Optional[str]:
+        """Validate that confidence is one of 'high', 'medium', or 'low' and normalize to lowercase."""
+        if v is None:
+            return v
+        normalized = v.lower()
+        valid_values = ['high', 'medium', 'low']
+        if normalized not in valid_values:
+            raise ValueError(f"Confidence must be one of {valid_values}, got '{v}'")
+        return normalized
+
+
+class QAHistoryResponse(BaseModel):
+    """
+    Response schema for listing Q&A conversation history for a contract.
+
+    This schema is useful for a future GET endpoint that retrieves the Q&A
+    conversation history for a given contract. Enables clients to review
+    previously asked questions and their answers.
+    """
+    contract_id: int = Field(..., description="Contract database ID")
+    qa_history: List[QAResponse] = Field(default_factory=list, description="List of Q&A interactions ordered by most recent first")
+    total_count: int = Field(..., description="Total number of Q&A records available")
